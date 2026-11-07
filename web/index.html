@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LDPlayer Warmup Master</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --primary: #38bdf8;
+      --primary-hover: #0284c7;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --green: #4ade80;
+      --amber: #facc15;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
+    .container { max-width: 900px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+    h1 { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .badge-hub { font-size: 11px; background: rgba(56, 189, 248, 0.15); color: var(--primary); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(56, 189, 248, 0.3); }
+    
+    .panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .panel-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+    
+    .btn { background: var(--primary); color: #000; font-weight: 600; font-size: 13px; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; transition: 0.15s ease; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: var(--primary-hover); }
+    .btn-secondary { background: #374151; color: var(--text); }
+    .btn-secondary:hover { background: #4b5563; }
+    .btn-danger { background: #ef4444; color: #fff; }
+    
+    .inst-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 12px; }
+    .inst-card { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; }
+    .inst-name { font-weight: 600; font-size: 14px; }
+    .inst-status { font-size: 12px; }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    .dot-online { background: var(--green); }
+    .dot-offline { background: var(--muted); }
+    
+    .acc-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .acc-table th, .acc-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .acc-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 600; }
+    .tag-input { width: 100%; background: #1f2937; border: 1px solid var(--border); color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+    
+    .toast { position: fixed; bottom: 20px; right: 20px; background: #1f2937; border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🤖 LDPlayer Warmup Master</h1>
+      <span class="badge-hub">Центральный хаб: 45.39.60.233:8098 (Online)</span>
+    </header>
+
+    <!-- Эмуляторы LDPlayer -->
+    <div class="panel">
+      <div class="panel-title">
+        <span>Эмуляторы LDPlayer на этом ПК</span>
+        <button class="btn btn-secondary" onclick="loadStatus()">Обновить статус</button>
+      </div>
+      <div class="inst-grid" id="instancesGrid">
+        <div style="color: var(--muted); font-size: 13px;">Сканирование экземпляров LDPlayer...</div>
+      </div>
+    </div>
+
+    <!-- Обнаруженные аккаунты Instagram -->
+    <div class="panel">
+      <div class="panel-title">
+        <span>Аккаунты Instagram & Нишевые Теги</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" onclick="scanAccounts()">🔍 Сканировать Instagram</button>
+          <button class="btn" onclick="saveConfiguration()">💾 Сохранить теги</button>
+        </div>
+      </div>
+      <table class="acc-table">
+        <thead>
+          <tr>
+            <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+            <th>Аккаунт</th>
+            <th>Нишевые теги (через запятую)</th>
+            <th>Лимиты / день</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody id="accountsBody">
+          <tr>
+            <td colspan="5" style="text-align: center; color: var(--muted); padding: 24px;">
+              Нажмите «🔍 Сканировать Instagram» для автоматического обнаружения добавленных профилей на устройстве.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Быстрый запуск -->
+    <div class="panel" style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <h3 style="font-size: 15px; margin-bottom: 4px;">Автономный прогрев по расписанию</h3>
+        <p style="font-size: 12px; color: var(--muted);">Движок автоматически держит интервалы, проверяет NekoBox VPN и пушит телеметрию в Контент-машину.</p>
+      </div>
+      <button class="btn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    let appConfig = {};
+    let detectedAccounts = [];
+
+    function showToast(msg, isErr = false) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.borderColor = isErr ? '#ef4444' : '#38bdf8';
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 4000);
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        appConfig = data.config || {};
+        renderInstances(data.instances || []);
+        renderAccounts(appConfig.accounts || []);
+      } catch (err) {
+        showToast('Ошибка связи с сервером LDPlayer: ' + err.message, true);
+      }
+    }
+
+    function renderInstances(list) {
+      const grid = document.getElementById('instancesGrid');
+      if (!list.length) {
+        grid.innerHTML = '<div style="color: var(--muted); font-size: 13px;">LDPlayer не обнаружен в C:\\LDPlayer\\LDPlayer14.</div>';
+        return;
+      }
+      grid.innerHTML = list.map(inst => `
+        <div class="inst-card">
+          <div>
+            <div class="inst-name">${inst.name} (Idx: ${inst.index})</div>
+            <div class="inst-status" style="color: ${inst.running ? 'var(--green)' : 'var(--muted)'};">
+              <span class="status-dot ${inst.running ? 'dot-online' : 'dot-offline'}"></span>
+              ${inst.running ? 'Запущен' : 'Остановлен'}
+            </div>
+          </div>
+          <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="scanAccounts(${inst.index})">Сканировать</button>
+        </div>
+      `).join('');
+    }
+
+    async function scanAccounts(idx = 0) {
+      showToast('Сканирование профилей Instagram через ADB root...');
+      try {
+        const res = await fetch('/api/scan-accounts?index=' + idx);
+        const data = await res.json();
+        if (data.accounts && data.accounts.length) {
+          data.accounts.forEach(acc => {
+            if (!appConfig.accounts.find(a => a.username === acc)) {
+              appConfig.accounts.push({
+                account_id: acc,
+                username: acc,
+                enabled: true,
+                niche_tags: ['business', 'growth', 'reels', 'marketing'],
+                limits: '40 Reels, 20 Likes, 5 Comm'
+              });
+            }
+          });
+          renderAccounts(appConfig.accounts);
+          showToast(`Найдено ${data.accounts.length} аккаунтов в Instagram!`);
+        } else {
+          // Если эмулятор еще не запущен или пустой, добавляем шаблон
+          if (!appConfig.accounts.length) {
+            appConfig.accounts = [
+              { account_id: 'default_user', username: 'my_niche_account', enabled: true, niche_tags: ['marketing', 'crypto', 'tech'], limits: '50 Reels, 20 Likes' }
+            ];
+            renderAccounts(appConfig.accounts);
+          }
+          showToast('Аккаунты не залогинены или эмулятор спит. Добавлен шаблон для настройки.');
+        }
+      } catch (e) {
+        showToast('Ошибка сканирования: ' + e.message, true);
+      }
+    }
+
+    function renderAccounts(accounts) {
+      const tbody = document.getElementById('accountsBody');
+      if (!accounts.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted); padding: 24px;">Нет добавленных аккаунтов. Нажмите «Сканировать».</td></tr>';
+        return;
+      }
+      tbody.innerHTML = accounts.map((acc, i) => `
+        <tr>
+          <td><input type="checkbox" class="acc-check" data-idx="${i}" ${acc.enabled ? 'checked' : ''}></td>
+          <td><strong>@${acc.username}</strong></td>
+          <td>
+            <input type="text" class="tag-input" id="tags_${i}" value="${(acc.niche_tags || []).join(', ')}" placeholder="например: reels, crypto, design">
+          </td>
+          <td style="color: var(--muted); font-size: 12px;">${acc.limits || '30 Likes, 60 Reels'}</td>
+          <td>
+            <button class="btn" style="padding: 4px 8px; font-size: 11px;" onclick="runSingle('${acc.account_id}')">Старт</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function toggleSelectAll() {
+      const checked = document.getElementById('selectAll').checked;
+      document.querySelectorAll('.acc-check').forEach(c => c.checked = checked);
+    }
+
+    async function saveConfiguration() {
+      document.querySelectorAll('.acc-check').forEach(c => {
+        const i = parseInt(c.dataset.idx);
+        appConfig.accounts[i].enabled = c.checked;
+        const tagsVal = document.getElementById('tags_' + i).value;
+        appConfig.accounts[i].niche_tags = tagsVal.split(',').map(t => t.trim()).filter(Boolean);
+      });
+      await fetch('/api/config/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(appConfig)
+      });
+      showToast('Теги и настройки успешно сохранены!');
+    }
+
+    async function runSingle(accountId) {
+      showToast(`Запуск прогрева для ${accountId}...`);
+      const res = await fetch('/api/worker/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId })
+      });
+      const data = await res.json();
+      showToast(data.message || 'Запущено');
+    }
+
+    async function startSelectedWarmup() {
+      await saveConfiguration();
+      const enabledAccs = appConfig.accounts.filter(a => a.enabled);
+      if (!enabledAccs.length) {
+        showToast('Выберите хотя бы один аккаунт галочкой!', true);
+        return;
+      }
+      for (const a of enabledAccs) {
+        runSingle(a.account_id);
+      }
+      showToast(`Запущен прогрев для ${enabledAccs.length} аккаунтов. Телеметрия передается в веб-панель.`);
+    }
+
+    window.onload = loadStatus;
+  </script>
+</body>
+</html>
