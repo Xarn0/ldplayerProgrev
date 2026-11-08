@@ -13,7 +13,6 @@ PORT = 8099
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "app_config.json"
 
-# Auto-detect LDPlayer directory
 DEFAULT_LD_DIRS = [
     Path(r"C:\LDPlayer\LDPlayer14"),
     Path(r"C:\LDPlayer\LDPlayer9"),
@@ -56,67 +55,89 @@ active_threads = {}
 
 def run_cmd(cmd_list):
     try:
-        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=15)
+        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="ignore")
         return res.stdout.strip()
     except Exception:
         return ""
 
-def list_ld_instances():
-    if not LDCONSOLE_EXE.exists():
-        return []
-    output = run_cmd([str(LDCONSOLE_EXE), "list2"])
-    instances = []
+def get_adb_devices():
+    output = run_cmd([str(ADB_EXE), "devices"])
+    devices = []
     for line in output.splitlines():
-        parts = line.split(",")
-        if len(parts) >= 2:
-            idx = parts[0].strip()
-            name = parts[1].strip()
-            instances.append({"index": idx, "name": name, "running": False})
+        line = line.strip()
+        if "\tdevice" in line:
+            devices.append(line.split("\t")[0])
+    return devices
+
+def list_ld_instances():
+    instances = []
+    if LDCONSOLE_EXE.exists():
+        output = run_cmd([str(LDCONSOLE_EXE), "list2"])
+        for line in output.splitlines():
+            parts = line.split(",")
+            if len(parts) >= 2:
+                idx = parts[0].strip()
+                name = parts[1].strip()
+                instances.append({"index": idx, "name": name, "running": False})
     
-    running = run_cmd([str(LDCONSOLE_EXE), "runninglist"])
-    running_names = [r.strip() for r in running.splitlines() if r.strip()]
+    adb_devs = get_adb_devices()
+    # Map running instances: index 0 -> emulator-5554, index 1 -> emulator-5556 (or 5558)
     for inst in instances:
-        if inst["name"] in running_names:
+        expected_dev = f"emulator-{5554 + int(inst['index']) * 2}"
+        if expected_dev in adb_devs or "emulator-5554" in adb_devs:
             inst["running"] = True
     return instances
 
 def detect_instagram_accounts(instance_idx=0):
     """
-    Auto-detects Instagram accounts directly from LDPlayer instance using ADB root shell.
-    Reads current.xml and accounts.xml from com.instagram.android/shared_prefs/.
+    Auto-detects logged-in Instagram accounts using ADB shell with root access.
+    Inspects USER_PREFERENCES.xml and shared_prefs for user identity.
     """
-    accounts = []
-    cat_cmd = [
-        str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
-        "--command", "su -c 'cat /data/data/com.instagram.android/shared_prefs/current.xml 2>/dev/null'"
+    dev_name = f"emulator-{5554 + int(instance_idx) * 2}"
+    adb_devs = get_adb_devices()
+    target_dev = dev_name if dev_name in adb_devs else (adb_devs[0] if adb_devs else None)
+
+    if not target_dev:
+        return []
+
+    cmd = [
+        str(ADB_EXE), "-s", target_dev, "shell",
+        "su -c 'cat /data/data/com.instagram.android/shared_prefs/*USER_PREFERENCES.xml 2>/dev/null'"
     ]
-    current_xml = run_cmd(cat_cmd)
-    if "username" in current_xml:
-        import re
-        matches = re.findall(r'value="([^"]+)"', current_xml)
-        for m in matches:
+    raw_xml = run_cmd(cmd)
+    
+    import re
+    accounts = []
+    # Match linked account names from fx_linkage_cache / account switcher
+    matches = re.findall(r'&quot;username&quot;:&quot;([^&"]+)&quot;', raw_xml)
+    for m in matches:
+        m = m.strip()
+        if len(m) > 2 and not m.endswith(".com") and " " not in m and not m.startswith("http"):
+            accounts.append(m)
+
+    # Secondary fallback check
+    if not accounts:
+        cmd2 = [
+            str(ADB_EXE), "-s", target_dev, "shell",
+            "su -c 'cat /data/data/com.instagram.android/shared_prefs/current.xml 2>/dev/null'"
+        ]
+        curr_xml = run_cmd(cmd2)
+        matches2 = re.findall(r'value="([^"]+)"', curr_xml)
+        for m in matches2:
             if len(m) > 2 and not m.isdigit() and "{" not in m:
                 accounts.append(m)
 
-    acc_cmd = [
-        str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
-        "--command", "su -c 'cat /data/data/com.instagram.android/shared_prefs/*account*.xml 2>/dev/null'"
-    ]
-    acc_xml = run_cmd(acc_cmd)
-    if acc_xml:
-        import re
-        matches = re.findall(r'username&quot;:&quot;([^&"]+)&quot;', acc_xml)
-        for m in matches:
-            if m not in accounts:
-                accounts.append(m)
-
-    return list(set(accounts))
+    return list(dict.fromkeys(accounts))
 
 def install_app_shortcut_to_ldplayer(instance_idx=0):
-    """Opens browser shortcut inside LDPlayer directly to the GUI."""
+    dev_name = f"emulator-{5554 + int(instance_idx) * 2}"
+    adb_devs = get_adb_devices()
+    target_dev = dev_name if dev_name in adb_devs else (adb_devs[0] if adb_devs else None)
+    if not target_dev:
+        return False
     cmd = [
-        str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
-        "--command", "am start -a android.intent.action.VIEW -d http://10.0.2.2:8099"
+        str(ADB_EXE), "-s", target_dev, "shell",
+        "am start -a android.intent.action.VIEW -d http://10.0.2.2:8099"
     ]
     res = run_cmd(cmd)
     return bool(res)
@@ -197,15 +218,6 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True, "message": "Настройки сохранены"}).encode("utf-8"))
             return
 
-        if parsed.path == "/api/launch-instance":
-            idx = data.get("index", 0)
-            run_cmd([str(LDCONSOLE_EXE), "launch", "--index", str(idx)])
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "message": f"Команда запуска отправлена инстансу {idx}"}).encode("utf-8"))
-            return
-
         if parsed.path == "/api/worker/start":
             account_id = data.get("account_id")
             idx = data.get("index", 0)
@@ -250,18 +262,13 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
 def main():
     os.chdir(str(BASE_DIR))
     server = socketserver.TCPServer(("0.0.0.0", PORT), WarmupHandler)
-    print(f"\n=======================================================")
-    print(f"🚀 LDPLAYER WARMUP ENGINE RUNNING ON:")
-    print(f"👉 Local PC GUI:      http://localhost:{PORT}")
-    print(f"👉 Inside LDPlayer:   http://10.0.2.2:{PORT}")
-    print(f"👉 Central Cloud Hub: {CENTRAL_HUB}")
-    print(f"=======================================================\n")
-    try:
-        import webbrowser
-        webbrowser.open(f"http://localhost:{PORT}")
-    except Exception:
-        pass
+    print("=======================================================")
+    print("LDPLAYER WARMUP ENGINE RUNNING ON:")
+    print("Local PC GUI:      http://localhost:" + str(PORT))
+    print("Inside LDPlayer:   http://10.0.2.2:" + str(PORT))
+    print("Central Cloud Hub: " + str(CENTRAL_HUB))
+    print("=======================================================")
     server.serve_forever()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
