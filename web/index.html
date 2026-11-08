@@ -19,7 +19,7 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
     body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
-    .container { max-width: 950px; margin: 0 auto; }
+    .container { max-width: 1050px; margin: 0 auto; }
     header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
     h1 { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
     .badge-hub { font-size: 11px; background: rgba(56, 189, 248, 0.15); color: var(--primary); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(56, 189, 248, 0.3); }
@@ -45,8 +45,12 @@
     .acc-table th, .acc-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
     .acc-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 600; }
     .tag-input { width: 100%; background: #1f2937; border: 1px solid var(--border); color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+    .limit-input { width: 48px; background: #1f2937; border: 1px solid var(--border); color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 12px; text-align: center; }
     
+    .limits-box { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
     .device-badge { font-size: 10px; background: rgba(255, 255, 255, 0.07); padding: 2px 6px; border-radius: 4px; color: var(--muted); margin-left: 6px; font-family: monospace; }
+    
+    .live-console { background: #000; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #38bdf8; height: 180px; overflow-y: auto; line-height: 1.5; white-space: pre-wrap; }
     .toast { position: fixed; bottom: 20px; right: 20px; background: #1f2937; border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: none; z-index: 1000; }
   </style>
 </head>
@@ -57,6 +61,7 @@
       <span class="badge-hub">Центральный хаб: 45.39.60.233:8098 (Online)</span>
     </header>
 
+    <!-- Эмуляторы LDPlayer -->
     <div class="panel">
       <div class="panel-title">
         <span>Эмуляторы LDPlayer на этом ПК</span>
@@ -69,22 +74,23 @@
       </div>
     </div>
 
+    <!-- Авторизованные профили Instagram -->
     <div class="panel">
       <div class="panel-title">
-        <span>Авторизованные профили Instagram (Только ваши аккаунты)</span>
+        <span>Авторизованные профили Instagram (Настройки Лимитов & Тегов)</span>
         <div style="display: flex; gap: 8px;">
           <button class="btn btn-secondary" onclick="scanAllAccounts()">🔍 Сканировать ВСЕ эмуляторы</button>
-          <button class="btn" onclick="saveConfiguration()">💾 Сохранить теги</button>
+          <button class="btn" onclick="saveConfiguration()">💾 Сохранить настройки</button>
         </div>
       </div>
       <table class="acc-table">
         <thead>
           <tr>
-            <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
-            <th>Аккаунт & Эмулятор</th>
-            <th>Нишевые теги (через запятую)</th>
-            <th>Лимиты / день</th>
-            <th>Статус / Действие</th>
+            <th style="width: 30px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+            <th style="width: 220px;">Аккаунт & Эмулятор</th>
+            <th>Нишевые теги</th>
+            <th style="width: 260px;">Лимиты (Reels / Лайки / Комм)</th>
+            <th style="width: 130px;">Действие</th>
           </tr>
         </thead>
         <tbody id="accountsBody">
@@ -97,10 +103,20 @@
       </table>
     </div>
 
+    <!-- Live Console -->
+    <div class="panel">
+      <div class="panel-title">
+        <span>📡 Живой лог действий (ADB & Интеракции в реальном времени)</span>
+        <span style="font-size: 11px; color: var(--green); text-transform: none;">● Автообновление (каждые 3 сек)</span>
+      </div>
+      <div class="live-console" id="liveConsole">Ожидание запуска сессии прогрева...</div>
+    </div>
+
+    <!-- Быстрый запуск -->
     <div class="panel" style="display: flex; justify-content: space-between; align-items: center;">
       <div>
         <h3 style="font-size: 15px; margin-bottom: 4px;">Автономный прогрев по расписанию</h3>
-        <p style="font-size: 12px; color: var(--muted);">Движок автоматически держит интервалы, проверяет NekoBox VPN и пушит телеметрию в Контент-машину.</p>
+        <p style="font-size: 12px; color: var(--muted);">Движок автоматически крутит Reels, ставит лайки, проверяет VPN и отправляет статистику в веб-кабинет.</p>
       </div>
       <button class="btn" id="startBulkBtn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
     </div>
@@ -128,8 +144,17 @@
         activeWorkers = data.active_workers || [];
         renderInstances(data.instances || []);
         renderAccounts(appConfig.accounts || []);
+        renderLogs(data.logs || []);
       } catch (err) {
-        showToast('Ошибка связи с сервером LDPlayer: ' + err.message, true);
+        // quiet polling error
+      }
+    }
+
+    function renderLogs(logs) {
+      const el = document.getElementById('liveConsole');
+      if (logs && logs.length) {
+        el.innerText = logs.join('\n');
+        el.scrollTop = el.scrollHeight;
       }
     }
 
@@ -191,7 +216,7 @@
 
     function handleScanResults(accList) {
       if (!accList.length) {
-        showToast('Аккаунты не найдены. Убедитесь, что Instagram открыт и вы авторизованы.', true);
+        showToast('Аккаунты не найдены. Убедитесь, что окно LDPlayer открыто и ADB включен.', true);
         return;
       }
       if (!appConfig.accounts) appConfig.accounts = [];
@@ -207,7 +232,7 @@
             device_id: dev,
             enabled: true,
             niche_tags: ['dogs', 'pets', 'puppy', 'reels'],
-            limits: '40 Reels, 20 Likes, 5 Comm'
+            limits: { reels: 35, likes: 15, comments: 2 }
           });
         } else if (dev) {
           existing.device_id = dev;
@@ -227,6 +252,7 @@
       }
       tbody.innerHTML = accounts.map((acc, i) => {
         const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
+        const lim = acc.limits || { reels: 30, likes: 15, comments: 2 };
         return `
         <tr>
           <td><input type="checkbox" class="acc-check" data-idx="${i}" ${acc.enabled ? 'checked' : ''}></td>
@@ -237,10 +263,19 @@
           <td>
             <input type="text" class="tag-input" id="tags_${i}" value="${(acc.niche_tags || []).join(', ')}" placeholder="например: reels, crypto, design">
           </td>
-          <td style="color: var(--muted); font-size: 12px;">${acc.limits || '30 Likes, 60 Reels'}</td>
+          <td>
+            <div class="limits-box">
+              <span>Reels:</span>
+              <input type="number" class="limit-input" id="reels_${i}" value="${lim.reels || 30}" min="1" max="200">
+              <span>Лайков:</span>
+              <input type="number" class="limit-input" id="likes_${i}" value="${lim.likes || 15}" min="0" max="100">
+              <span>Комм:</span>
+              <input type="number" class="limit-input" id="comm_${i}" value="${lim.comments || 2}" min="0" max="20">
+            </div>
+          </td>
           <td>
             <button class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)">
-              ${isRunning ? '● Идёт прогрев' : '▶ Старт'}
+              ${isRunning ? '● Прогрев идёт' : '▶ Старт'}
             </button>
           </td>
         </tr>
@@ -261,6 +296,10 @@
           if (tagsVal != null) {
             appConfig.accounts[i].niche_tags = tagsVal.split(',').map(t => t.trim()).filter(Boolean);
           }
+          const reelsVal = parseInt(document.getElementById('reels_' + i)?.value || 30);
+          const likesVal = parseInt(document.getElementById('likes_' + i)?.value || 15);
+          const commVal = parseInt(document.getElementById('comm_' + i)?.value || 2);
+          appConfig.accounts[i].limits = { reels: reelsVal, likes: likesVal, comments: commVal };
         }
       });
       await fetch('/api/config/save', {
@@ -268,9 +307,11 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(appConfig)
       });
+      showToast('Настройки лимитов и тегов сохранены!');
     }
 
     async function runSingle(accountId, btnEl) {
+      await saveConfiguration();
       if (btnEl) {
         btnEl.innerText = '⏳ Запуск...';
         btnEl.disabled = true;
@@ -286,9 +327,10 @@
         showToast(data.message || 'Прогрев запущен');
         if (btnEl) {
           btnEl.className = 'btn btn-running';
-          btnEl.innerText = '● Идёт прогрев';
+          btnEl.innerText = '● Прогрев идёт';
           btnEl.disabled = false;
         }
+        loadStatus();
       } catch (e) {
         showToast('Ошибка запуска: ' + e.message, true);
         if (btnEl) {
@@ -326,8 +368,7 @@
     }
 
     window.onload = loadStatus;
-    // Auto-refresh worker status every 10 seconds
-    setInterval(loadStatus, 10000);
+    setInterval(loadStatus, 3000);
   </script>
 </body>
 </html>

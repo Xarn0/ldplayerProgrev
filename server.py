@@ -32,12 +32,23 @@ DEFAULT_CONFIG = {
     "hub_token": CENTRAL_TOKEN,
     "accounts": [],
     "daily_limits": {
-        "max_likes": 30,
-        "max_reels": 60,
-        "max_comments": 5
+        "max_reels": 30,
+        "max_likes": 15,
+        "max_comments": 3
     },
     "session_duration_min": [10, 25]
 }
+
+live_logs = []
+MAX_LOGS = 100
+
+def add_log(msg):
+    ts = time.strftime("%H:%M:%S")
+    entry = f"[{ts}] {msg}"
+    live_logs.append(entry)
+    if len(live_logs) > MAX_LOGS:
+        live_logs.pop(0)
+    print(entry)
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -150,21 +161,26 @@ def detect_instagram_accounts(instance_idx=0, scan_all=False):
     return found_accounts
 
 def sync_client_runner_config(target_accounts):
-    """Generates dynamic config for the client-ldplayer runner."""
     client_dir = BASE_DIR.parent / "client-ldplayer"
     client_cfg_file = client_dir / "config.json"
     
-    # Group accounts by device_id
     dev_map = {}
     for acc in target_accounts:
         dev = acc.get("device_id") or "emulator-5554"
         if dev not in dev_map:
             dev_map[dev] = []
+        
+        # Parse customized limits
+        limits = acc.get("limits") or {}
+        max_reels = int(limits.get("reels", 30))
+        max_likes = int(limits.get("likes", 15))
+        max_comments = int(limits.get("comments", 2))
+
         dev_map[dev].append({
             "account_id": acc.get("account_id") or acc.get("username"),
             "username": acc.get("username"),
             "niche_tags": acc.get("niche_tags") or ["dogs", "reels", "puppy"],
-            "daily_limits": { "max_likes": 20, "max_reels": 40, "max_comments": 3 },
+            "daily_limits": { "max_likes": max_likes, "max_reels": max_reels, "max_comments": max_comments },
             "session_minutes": [8, 15]
         })
 
@@ -202,12 +218,11 @@ def run_worker_thread(account_ids):
     cfg = load_config()
     target_accs = [a for a in cfg.get("accounts", []) if a.get("account_id") in account_ids or a.get("username") in account_ids]
     if not target_accs:
-        # If not found, synthesize from requested IDs
         target_accs = [{"account_id": aid, "username": aid, "device_id": "emulator-5554"} for aid in account_ids]
 
     sync_client_runner_config(target_accs)
     runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
-    print(f"[Worker] Spawning Node.js runner for {len(target_accs)} account(s)...")
+    add_log(f"Старт воркера прогрева для аккаунтов: {', '.join(account_ids)}")
     try:
         proc = subprocess.Popen(
             ["node", str(runner_script)],
@@ -219,14 +234,16 @@ def run_worker_thread(account_ids):
             errors="ignore"
         )
         for line in proc.stdout:
-            print(f"[Engine] {line.strip()}")
+            cleaned = line.strip()
+            if cleaned:
+                add_log(cleaned)
         proc.wait()
     except Exception as e:
-        print(f"[Worker] Error: {e}")
+        add_log(f"Ошибка воркера: {e}")
     finally:
         for aid in account_ids:
             active_threads.pop(aid, None)
-        print("[Worker] Finished warmup cycle.")
+        add_log("Сессия прогрева завершена.")
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -251,7 +268,8 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 "ok": True,
                 "config": cfg,
                 "instances": instances,
-                "active_workers": list(active_threads.keys())
+                "active_workers": list(active_threads.keys()),
+                "logs": live_logs[-40:]
             }
             self.wfile.write(json.dumps(res).encode("utf-8"))
             return
@@ -323,7 +341,7 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "message": "Worker already active"}).encode("utf-8"))
+                self.wfile.write(json.dumps({"ok": True, "message": "Воркер уже работает"}).encode("utf-8"))
                 return
 
             t = threading.Thread(target=run_worker_thread, args=([account_id],), daemon=True)
