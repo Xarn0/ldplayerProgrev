@@ -127,6 +127,7 @@
   <script>
     let appConfig = {};
     let activeWorkers = [];
+    let isEditing = false;
 
     function showToast(msg, isErr = false) {
       const t = document.getElementById('toast');
@@ -140,14 +141,65 @@
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
+        const prevAccounts = appConfig.accounts;
         appConfig = data.config || {};
         activeWorkers = data.active_workers || [];
         renderInstances(data.instances || []);
-        renderAccounts(appConfig.accounts || []);
         renderLogs(data.logs || []);
+
+        // Не перерисовывать инпуты, если пользователь сейчас редактирует поле или они уже отрисованы
+        const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        const userIsTyping = activeTag === 'input' || activeTag === 'textarea';
+        
+        if (!userIsTyping) {
+          syncCurrentFormToConfig();
+          renderAccounts(appConfig.accounts || []);
+        } else {
+          updateWorkersBadges();
+        }
       } catch (err) {
         // quiet polling error
       }
+    }
+
+    function syncCurrentFormToConfig() {
+      if (!appConfig.accounts) return;
+      document.querySelectorAll('.acc-check').forEach(c => {
+        const i = parseInt(c.dataset.idx);
+        if (appConfig.accounts[i]) {
+          appConfig.accounts[i].enabled = c.checked;
+          const tagsVal = document.getElementById('tags_' + i)?.value;
+          if (tagsVal != null) {
+            appConfig.accounts[i].niche_tags = tagsVal.split(',').map(t => t.trim()).filter(Boolean);
+          }
+          const reelsVal = parseInt(document.getElementById('reels_' + i)?.value);
+          const likesVal = parseInt(document.getElementById('likes_' + i)?.value);
+          const commVal = parseInt(document.getElementById('comm_' + i)?.value);
+          if (!isNaN(reelsVal)) {
+            if (!appConfig.accounts[i].limits) appConfig.accounts[i].limits = {};
+            appConfig.accounts[i].limits.reels = reelsVal;
+          }
+          if (!isNaN(likesVal)) {
+            if (!appConfig.accounts[i].limits) appConfig.accounts[i].limits = {};
+            appConfig.accounts[i].limits.likes = likesVal;
+          }
+          if (!isNaN(commVal)) {
+            if (!appConfig.accounts[i].limits) appConfig.accounts[i].limits = {};
+            appConfig.accounts[i].limits.comments = commVal;
+          }
+        }
+      });
+    }
+
+    function updateWorkersBadges() {
+      (appConfig.accounts || []).forEach((acc, i) => {
+        const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
+        const btn = document.getElementById('btn_action_' + i);
+        if (btn) {
+          btn.className = 'btn ' + (isRunning ? 'btn-running' : '');
+          btn.innerText = isRunning ? '● Прогрев идёт' : '▶ Старт';
+        }
+      });
     }
 
     function renderLogs(logs) {
@@ -274,7 +326,7 @@
             </div>
           </td>
           <td>
-            <button class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)">
+            <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)">
               ${isRunning ? '● Прогрев идёт' : '▶ Старт'}
             </button>
           </td>
