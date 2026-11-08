@@ -46,6 +46,7 @@
     .acc-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 600; }
     .tag-input { width: 100%; background: #1f2937; border: 1px solid var(--border); color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
     
+    .device-badge { font-size: 10px; background: rgba(255, 255, 255, 0.07); padding: 2px 6px; border-radius: 4px; color: var(--muted); margin-left: 6px; font-family: monospace; }
     .toast { position: fixed; bottom: 20px; right: 20px; background: #1f2937; border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: none; z-index: 1000; }
   </style>
 </head>
@@ -72,9 +73,9 @@
     <!-- Обнаруженные аккаунты Instagram -->
     <div class="panel">
       <div class="panel-title">
-        <span>Аккаунты Instagram & Нишевые Теги</span>
+        <span>Авторизованные профили Instagram (Только ваши аккаунты)</span>
         <div style="display: flex; gap: 8px;">
-          <button class="btn btn-secondary" onclick="scanAccounts()">🔍 Сканировать Instagram</button>
+          <button class="btn btn-secondary" onclick="scanAllAccounts()">🔍 Сканировать ВСЕ эмуляторы</button>
           <button class="btn" onclick="saveConfiguration()">💾 Сохранить теги</button>
         </div>
       </div>
@@ -82,7 +83,7 @@
         <thead>
           <tr>
             <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
-            <th>Аккаунт</th>
+            <th>Аккаунт & Эмулятор</th>
             <th>Нишевые теги (через запятую)</th>
             <th>Лимиты / день</th>
             <th>Действие</th>
@@ -91,7 +92,7 @@
         <tbody id="accountsBody">
           <tr>
             <td colspan="5" style="text-align: center; color: var(--muted); padding: 24px;">
-              Нажмите «🔍 Сканировать Instagram» для автоматического обнаружения добавленных профилей на устройстве.
+              Нажмите «🔍 Сканировать ВСЕ эмуляторы» для чтения профилей из запущенных окон.
             </td>
           </tr>
         </tbody>
@@ -112,7 +113,6 @@
 
   <script>
     let appConfig = {};
-    let detectedAccounts = [];
 
     function showToast(msg, isErr = false) {
       const t = document.getElementById('toast');
@@ -146,11 +146,11 @@
             <div class="inst-name">${inst.name} (ID: ${inst.index})</div>
             <div class="inst-status" style="color: ${inst.running ? 'var(--green)' : 'var(--muted)'};">
               <span class="status-dot ${inst.running ? 'dot-online' : 'dot-offline'}"></span>
-              ${inst.running ? 'Запущен' : 'Остановлен'}
+              ${inst.running ? 'Запущен (' + (inst.device_id || 'ADB') + ')' : 'Остановлен'}
             </div>
           </div>
           <div style="display: flex; flex-direction: column; gap: 4px;">
-            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="scanAccounts(${inst.index})">Сканировать</button>
+            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="scanSingleInstance(${inst.index})">Сканировать</button>
             <button class="btn" style="padding: 4px 8px; font-size: 11px; background: #6366f1; color: #fff;" onclick="installToDevice(${inst.index})">📲 В эмулятор</button>
           </div>
         </div>
@@ -168,37 +168,56 @@
       }
     }
 
-    async function scanAccounts(idx = 0) {
-      showToast('Сканирование профилей Instagram через ADB root...');
+    async function scanSingleInstance(idx) {
+      showToast('Сканирование профилей Instagram на эмуляторе #' + idx + '...');
       try {
         const res = await fetch('/api/scan-accounts?index=' + idx);
         const data = await res.json();
-        if (data.accounts && data.accounts.length) {
-          data.accounts.forEach(acc => {
-            if (!appConfig.accounts.find(a => a.username === acc)) {
-              appConfig.accounts.push({
-                account_id: acc,
-                username: acc,
-                enabled: true,
-                niche_tags: ['business', 'growth', 'reels', 'marketing'],
-                limits: '40 Reels, 20 Likes, 5 Comm'
-              });
-            }
-          });
-          renderAccounts(appConfig.accounts);
-          showToast(`Найдено ${data.accounts.length} аккаунтов в Instagram!`);
-        } else {
-          if (!appConfig.accounts.length) {
-            appConfig.accounts = [
-              { account_id: 'default_user', username: 'my_niche_account', enabled: true, niche_tags: ['marketing', 'crypto', 'tech'], limits: '50 Reels, 20 Likes' }
-            ];
-            renderAccounts(appConfig.accounts);
-          }
-          showToast('Аккаунты не залогинены или эмулятор спит. Добавлен шаблон для настройки.');
-        }
+        handleScanResults(data.accounts || []);
       } catch (e) {
         showToast('Ошибка сканирования: ' + e.message, true);
       }
+    }
+
+    async function scanAllAccounts() {
+      showToast('Сканирование ВСЕХ запущенных эмуляторов...');
+      try {
+        const res = await fetch('/api/scan-accounts?all=true');
+        const data = await res.json();
+        handleScanResults(data.accounts || []);
+      } catch (e) {
+        showToast('Ошибка сканирования: ' + e.message, true);
+      }
+    }
+
+    function handleScanResults(accList) {
+      if (!accList.length) {
+        showToast('Аккаунты не найдены. Убедитесь, что Instagram открыт и вы авторизованы.', true);
+        return;
+      }
+      if (!appConfig.accounts) appConfig.accounts = [];
+
+      accList.forEach(item => {
+        const u = typeof item === 'string' ? item : item.username;
+        const dev = typeof item === 'object' ? item.device_id : '';
+        const existing = appConfig.accounts.find(a => a.username === u);
+        if (!existing) {
+          appConfig.accounts.push({
+            account_id: u,
+            username: u,
+            device_id: dev,
+            enabled: true,
+            niche_tags: ['dogs', 'pets', 'puppy', 'reels'],
+            limits: '40 Reels, 20 Likes, 5 Comm'
+          });
+        } else if (dev) {
+          existing.device_id = dev;
+        }
+      });
+
+      renderAccounts(appConfig.accounts);
+      saveConfiguration();
+      showToast(`Найдено ${accList.length} ваших авторизованных аккаунтов!`);
     }
 
     function renderAccounts(accounts) {
@@ -210,7 +229,10 @@
       tbody.innerHTML = accounts.map((acc, i) => `
         <tr>
           <td><input type="checkbox" class="acc-check" data-idx="${i}" ${acc.enabled ? 'checked' : ''}></td>
-          <td><strong>@${acc.username}</strong></td>
+          <td>
+            <strong>@${acc.username}</strong>
+            <span class="device-badge">${acc.device_id || 'LDPlayer'}</span>
+          </td>
           <td>
             <input type="text" class="tag-input" id="tags_${i}" value="${(acc.niche_tags || []).join(', ')}" placeholder="например: reels, crypto, design">
           </td>
@@ -230,16 +252,19 @@
     async function saveConfiguration() {
       document.querySelectorAll('.acc-check').forEach(c => {
         const i = parseInt(c.dataset.idx);
-        appConfig.accounts[i].enabled = c.checked;
-        const tagsVal = document.getElementById('tags_' + i).value;
-        appConfig.accounts[i].niche_tags = tagsVal.split(',').map(t => t.trim()).filter(Boolean);
+        if (appConfig.accounts[i]) {
+          appConfig.accounts[i].enabled = c.checked;
+          const tagsVal = document.getElementById('tags_' + i)?.value;
+          if (tagsVal != null) {
+            appConfig.accounts[i].niche_tags = tagsVal.split(',').map(t => t.trim()).filter(Boolean);
+          }
+        }
       });
       await fetch('/api/config/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(appConfig)
       });
-      showToast('Теги и настройки успешно сохранены!');
     }
 
     async function runSingle(accountId) {

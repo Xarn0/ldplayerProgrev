@@ -6,6 +6,7 @@ import subprocess
 import threading
 import http.server
 import socketserver
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -69,6 +70,34 @@ def get_adb_devices():
             devices.append(line.split("\t")[0])
     return devices
 
+def get_device_for_index(instance_idx):
+    """
+    Resolves the exact ADB device serial for a given LDPlayer instance index.
+    Checks running emulators and maps via properties or ports.
+    """
+    adb_devs = get_adb_devices()
+    if not adb_devs:
+        return None
+    
+    # Standard LDPlayer port formula: 5554 + idx * 2
+    try:
+        expected = f"emulator-{5554 + int(instance_idx) * 2}"
+        if expected in adb_devs:
+            return expected
+    except Exception:
+        pass
+
+    # If only one emulator running and index requested
+    if len(adb_devs) == 1:
+        return adb_devs[0]
+
+    # Check if instance_idx is within bounds
+    idx = int(instance_idx)
+    if idx < len(adb_devs):
+        return adb_devs[idx]
+
+    return adb_devs[0] if adb_devs else None
+
 def list_ld_instances():
     instances = []
     if LDCONSOLE_EXE.exists():
@@ -81,66 +110,73 @@ def list_ld_instances():
                 instances.append({"index": idx, "name": name, "running": False})
     
     adb_devs = get_adb_devices()
-    # Map running instances: index 0 -> emulator-5554, index 1 -> emulator-5556 (or 5558)
     for inst in instances:
-        expected_dev = f"emulator-{5554 + int(inst['index']) * 2}"
-        if expected_dev in adb_devs or "emulator-5554" in adb_devs:
+        dev = get_device_for_index(inst["index"])
+        if dev and dev in adb_devs:
             inst["running"] = True
+            inst["device_id"] = dev
+
     return instances
 
-def detect_instagram_accounts(instance_idx=0):
+def detect_instagram_accounts(instance_idx=0, scan_all=False):
     """
-    Auto-detects logged-in Instagram accounts using ADB shell with root access.
-    Inspects USER_PREFERENCES.xml and shared_prefs for user identity.
+    Accurately extracts ONLY logged-in accounts from Instagram Account Switcher / Preferences.
+    Excludes searched users, followings, threads or suggestions.
     """
-    dev_name = f"emulator-{5554 + int(instance_idx) * 2}"
     adb_devs = get_adb_devices()
-    target_dev = dev_name if dev_name in adb_devs else (adb_devs[0] if adb_devs else None)
-
-    if not target_dev:
+    if not adb_devs:
         return []
 
-    cmd = [
-        str(ADB_EXE), "-s", target_dev, "shell",
-        "su -c 'cat /data/data/com.instagram.android/shared_prefs/*USER_PREFERENCES.xml 2>/dev/null'"
-    ]
-    raw_xml = run_cmd(cmd)
-    
-    import re
-    accounts = []
-    # Match linked account names from fx_linkage_cache / account switcher
-    matches = re.findall(r'&quot;username&quot;:&quot;([^&"]+)&quot;', raw_xml)
-    for m in matches:
-        m = m.strip()
-        if len(m) > 2 and not m.endswith(".com") and " " not in m and not m.startswith("http"):
-            accounts.append(m)
+    target_devices = adb_devs if scan_all else [get_device_for_index(instance_idx)]
+    found_accounts = []
 
-    # Secondary fallback check
-    if not accounts:
-        cmd2 = [
-            str(ADB_EXE), "-s", target_dev, "shell",
-            "su -c 'cat /data/data/com.instagram.android/shared_prefs/current.xml 2>/dev/null'"
+    for dev in target_devices:
+        if not dev:
+            continue
+        # Read the main Instagram preference file
+        cmd = [
+            str(ADB_EXE), "-s", dev, "shell",
+            "su -c 'cat /data/data/com.instagram.android/shared_prefs/com.instagram.android_preferences.xml 2>/dev/null'"
         ]
-        curr_xml = run_cmd(cmd2)
-        matches2 = re.findall(r'value="([^"]+)"', curr_xml)
-        for m in matches2:
-            if len(m) > 2 and not m.isdigit() and "{" not in m:
-                accounts.append(m)
+        xml = run_cmd(cmd)
+        if not xml:
+            continue
 
-    return list(dict.fromkeys(accounts))
+        device_accs = []
+        # 1. Exact Account Switcher Map: account_linking_family_map_data
+        family_match = re.search(r'name="account_linking_family_map_data">(.*?)</string>', xml, re.DOTALL)
+        if family_match:
+            raw_content = family_match.group(1)
+            usernames = re.findall(r'username\\&quot;:\\&quot;([^\\&"]+)\\&quot;', raw_content)
+            device_accs.extend(usernames)
 
-def install_app_shortcut_to_ldplayer(instance_idx=0):
-    dev_name = f"emulator-{5554 + int(instance_idx) * 2}"
-    adb_devs = get_adb_devices()
-    target_dev = dev_name if dev_name in adb_devs else (adb_devs[0] if adb_devs else None)
-    if not target_dev:
-        return False
-    cmd = [
-        str(ADB_EXE), "-s", target_dev, "shell",
-        "am start -a android.intent.action.VIEW -d http://10.0.2.2:8099"
-    ]
-    res = run_cmd(cmd)
-    return bool(res)
+        # 2. Currently active logged in user in 'current' tag
+        current_match = re.search(r'name="current">([^<]+)</string>', xml)
+        if current_match:
+            curr_text = current_match.group(1)
+            curr_users = re.findall(r'&quot;username&quot;:&quot;([^&"]+)&quot;', curr_text)
+            device_accs.extend(curr_users)
+
+        # 3. Fallback: multiple_accounts.xml
+        cmd2 = [
+            str(ADB_EXE), "-s", dev, "shell",
+            "su -c 'cat /data/data/com.instagram.android/shared_prefs/*multiple_account*.xml 2>/dev/null'"
+        ]
+        xml2 = run_cmd(cmd2)
+        if xml2:
+            m_users = re.findall(r'username&quot;:&quot;([^&"]+)&quot;', xml2)
+            device_accs.extend(m_users)
+
+        for u in device_accs:
+            u = u.strip()
+            if len(u) > 2 and not u.endswith(".com") and " " not in u:
+                if not any(a["username"] == u for a in found_accounts):
+                    found_accounts.append({
+                        "username": u,
+                        "device_id": dev
+                    })
+
+    return found_accounts
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -173,17 +209,23 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/scan-accounts":
             query = parse_qs(parsed.query)
             idx = query.get("index", ["0"])[0]
-            accounts = detect_instagram_accounts(idx)
+            scan_all = query.get("all", ["false"])[0] == "true"
+            acc_list = detect_instagram_accounts(idx, scan_all=scan_all)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "accounts": accounts}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": True, "accounts": acc_list}).encode("utf-8"))
             return
 
         if parsed.path == "/api/install-device":
             query = parse_qs(parsed.query)
             idx = query.get("index", ["0"])[0]
-            success = install_app_shortcut_to_ldplayer(idx)
+            dev = get_device_for_index(idx)
+            success = False
+            if dev:
+                cmd = [str(ADB_EXE), "-s", dev, "shell", "am start -a android.intent.action.VIEW -d http://10.0.2.2:8099"]
+                run_cmd(cmd)
+                success = True
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -270,5 +312,5 @@ def main():
     print("=======================================================")
     server.serve_forever()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
