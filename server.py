@@ -1,10 +1,3 @@
-"""
-LDPlayer Warmup Master - Local Backend & GUI Engine
-Runs on localhost:8099 with a modern Web GUI.
-Communicates with LDPlayer instances via ADB and ldconsole.
-Auto-detects logged-in Instagram accounts directly from device storage / package prefs.
-Sends real-time telemetry to Central Warmup Hub: http://45.39.60.233:8098
-"""
 import os
 import sys
 import json
@@ -19,7 +12,15 @@ from urllib.parse import parse_qs, urlparse
 PORT = 8099
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "app_config.json"
-LD_DIR = Path(r"C:\LDPlayer\LDPlayer14")
+
+# Auto-detect LDPlayer directory
+DEFAULT_LD_DIRS = [
+    Path(r"C:\LDPlayer\LDPlayer14"),
+    Path(r"C:\LDPlayer\LDPlayer9"),
+    Path(r"D:\LDPlayer\LDPlayer9"),
+    Path(r"D:\LDPlayer\LDPlayer14"),
+]
+LD_DIR = next((p for p in DEFAULT_LD_DIRS if (p / "ldconsole.exe").exists()), DEFAULT_LD_DIRS[0])
 ADB_EXE = LD_DIR / "adb.exe"
 LDCONSOLE_EXE = LD_DIR / "ldconsole.exe"
 CENTRAL_HUB = "http://45.39.60.233:8098"
@@ -57,7 +58,7 @@ def run_cmd(cmd_list):
     try:
         res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=15)
         return res.stdout.strip()
-    except Exception as e:
+    except Exception:
         return ""
 
 def list_ld_instances():
@@ -82,17 +83,9 @@ def list_ld_instances():
 def detect_instagram_accounts(instance_idx=0):
     """
     Auto-detects Instagram accounts directly from LDPlayer instance using ADB root shell.
-    Checks /data/data/com.instagram.android/shared_prefs/ and dumps.
+    Reads current.xml and accounts.xml from com.instagram.android/shared_prefs/.
     """
     accounts = []
-    # Try ldconsole adb
-    cmd = [
-        str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
-        "--command", "su -c 'ls /data/data/com.instagram.android/shared_prefs/'"
-    ]
-    prefs_list = run_cmd(cmd)
-    
-    # Try reading current.xml or user_profile.xml
     cat_cmd = [
         str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
         "--command", "su -c 'cat /data/data/com.instagram.android/shared_prefs/current.xml 2>/dev/null'"
@@ -105,7 +98,6 @@ def detect_instagram_accounts(instance_idx=0):
             if len(m) > 2 and not m.isdigit() and "{" not in m:
                 accounts.append(m)
 
-    # Secondary check: accounts.xml or similar
     acc_cmd = [
         str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
         "--command", "su -c 'cat /data/data/com.instagram.android/shared_prefs/*account*.xml 2>/dev/null'"
@@ -119,6 +111,15 @@ def detect_instagram_accounts(instance_idx=0):
                 accounts.append(m)
 
     return list(set(accounts))
+
+def install_app_shortcut_to_ldplayer(instance_idx=0):
+    """Opens browser shortcut inside LDPlayer directly to the GUI."""
+    cmd = [
+        str(LDCONSOLE_EXE), "adb", "--index", str(instance_idx),
+        "--command", "am start -a android.intent.action.VIEW -d http://10.0.2.2:8099"
+    ]
+    res = run_cmd(cmd)
+    return bool(res)
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -158,7 +159,16 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True, "accounts": accounts}).encode("utf-8"))
             return
 
-        # Serve static HTML/JS/CSS from web/ directory
+        if parsed.path == "/api/install-device":
+            query = parse_qs(parsed.query)
+            idx = query.get("index", ["0"])[0]
+            success = install_app_shortcut_to_ldplayer(idx)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "installed": success, "message": f"Интерфейс запущен на экране LDPlayer #{idx}"}).encode("utf-8"))
+            return
+
         if parsed.path == "/" or parsed.path == "/index.html":
             html_file = BASE_DIR / "web" / "index.html"
             if html_file.exists():
@@ -187,6 +197,15 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True, "message": "Настройки сохранены"}).encode("utf-8"))
             return
 
+        if parsed.path == "/api/launch-instance":
+            idx = data.get("index", 0)
+            run_cmd([str(LDCONSOLE_EXE), "launch", "--index", str(idx)])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "message": f"Команда запуска отправлена инстансу {idx}"}).encode("utf-8"))
+            return
+
         if parsed.path == "/api/worker/start":
             account_id = data.get("account_id")
             idx = data.get("index", 0)
@@ -199,7 +218,6 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
 
             def worker_task():
                 print(f"[Worker] Started warmup for {account_id} on LDPlayer {idx}")
-                # Calls client-ldplayer runner script
                 runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
                 if runner_script.exists():
                     subprocess.run(["node", str(runner_script)], cwd=str(runner_script.parent))
@@ -234,9 +252,9 @@ def main():
     server = socketserver.TCPServer(("0.0.0.0", PORT), WarmupHandler)
     print(f"\n=======================================================")
     print(f"🚀 LDPLAYER WARMUP ENGINE RUNNING ON:")
-    print(f"👉 Local GUI:   http://localhost:{PORT}")
-    print(f"👉 Network GUI: http://127.0.0.1:{PORT}")
-    print(f"👉 Central Hub: {CENTRAL_HUB}")
+    print(f"👉 Local PC GUI:      http://localhost:{PORT}")
+    print(f"👉 Inside LDPlayer:   http://10.0.2.2:{PORT}")
+    print(f"👉 Central Cloud Hub: {CENTRAL_HUB}")
     print(f"=======================================================\n")
     try:
         import webbrowser
