@@ -67,6 +67,7 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 active_threads = {}
+active_procs = {}
 
 def run_cmd(cmd_list):
     try:
@@ -226,6 +227,7 @@ def run_worker_thread(account_ids):
     sync_client_runner_config(target_accs)
     runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
     add_log(f"Старт воркера прогрева для аккаунтов: {', '.join(account_ids)}")
+    proc = None
     try:
         proc = subprocess.Popen(
             ["node", str(runner_script)],
@@ -236,6 +238,8 @@ def run_worker_thread(account_ids):
             encoding="utf-8",
             errors="ignore"
         )
+        for aid in account_ids:
+            active_procs[aid] = proc
         for line in proc.stdout:
             cleaned = line.strip()
             if cleaned:
@@ -245,8 +249,48 @@ def run_worker_thread(account_ids):
         add_log(f"Ошибка воркера: {e}")
     finally:
         for aid in account_ids:
-            active_threads.pop(aid, None)
+            if active_procs.get(aid) is proc:
+                active_procs.pop(aid, None)
+                active_threads.pop(aid, None)
+            elif aid not in active_procs:
+                active_threads.pop(aid, None)
         add_log("Сессия прогрева завершена.")
+
+
+def kill_proc_tree(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def stop_accounts(account_ids):
+    """Kill node runner processes for the given accounts. Returns list of stopped account ids."""
+    stopped = set()
+    procs = []
+    for aid in account_ids:
+        p = active_procs.get(aid)
+        if p is not None and p not in procs:
+            procs.append(p)
+    for p in procs:
+        kill_proc_tree(p)
+        # all accounts sharing this runner process are stopped too
+        for aid, pp in list(active_procs.items()):
+            if pp is p:
+                stopped.add(aid)
+                active_procs.pop(aid, None)
+                active_threads.pop(aid, None)
+    for aid in account_ids:
+        if aid in active_threads:
+            active_threads.pop(aid, None)
+            stopped.add(aid)
+    return sorted(stopped)
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -374,11 +418,20 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/worker/stop":
             account_id = data.get("account_id")
-            active_threads.pop(account_id, None)
+            if account_id == "all" or data.get("all"):
+                targets = list(set(active_threads.keys()) | set(active_procs.keys()))
+            else:
+                targets = [account_id] if account_id else []
+            stopped = stop_accounts(targets)
+            if stopped:
+                add_log(f"[STOP] Прогрев остановлен пользователем: {', '.join(stopped)}")
+                msg = f"Остановлено: {', '.join('@' + s for s in stopped)}"
+            else:
+                msg = "Нет активных воркеров для остановки"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "message": "Остановлен"}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": True, "message": msg, "stopped": stopped, "active_workers": list(active_threads.keys())}).encode("utf-8"))
             return
 
         self.send_response(404)

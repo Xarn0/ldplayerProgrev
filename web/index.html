@@ -32,6 +32,8 @@
     .btn-secondary { background: #374151; color: var(--text); }
     .btn-secondary:hover { background: #4b5563; }
     .btn-running { background: #166534; color: #4ade80; border: 1px solid #22c55e; }
+    .btn-stop { background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
+    .btn-stop:hover { background: #991b1b; }
     
     .inst-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-bottom: 12px; }
     .inst-card { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; }
@@ -118,7 +120,10 @@
         <h3 style="font-size: 15px; margin-bottom: 4px;">Автономный прогрев по расписанию</h3>
         <p style="font-size: 12px; color: var(--muted);">Движок автоматически крутит Reels, ставит лайки, проверяет VPN и отправляет статистику в веб-кабинет.</p>
       </div>
-      <button class="btn" id="startBulkBtn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-stop" id="stopAllBtn" style="padding: 10px 20px; font-size: 14px; display: none;" onclick="stopAllWarmup()">⏹ Остановить всё</button>
+        <button class="btn" id="startBulkBtn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
+      </div>
     </div>
   </div>
 
@@ -137,26 +142,24 @@
       setTimeout(() => { t.style.display = 'none'; }, 4000);
     }
 
-    async function loadStatus() {
+    async function loadStatus(force = false) {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        const prevAccounts = appConfig.accounts;
         appConfig = data.config || {};
         activeWorkers = data.active_workers || [];
         renderInstances(data.instances || []);
         renderLogs(data.logs || []);
 
-        // Не перерисовывать инпуты, если пользователь сейчас редактирует поле или они уже отрисованы
+        // Не перерисовывать инпуты, если пользователь сейчас редактирует поле
         const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
         const userIsTyping = activeTag === 'input' || activeTag === 'textarea';
         
-        if (!userIsTyping) {
-          syncCurrentFormToConfig();
+        if (force || !userIsTyping) {
+          if (!force) syncCurrentFormToConfig();
           renderAccounts(appConfig.accounts || []);
-        } else {
-          updateWorkersBadges();
         }
+        updateWorkersBadges();
       } catch (err) {
         // quiet polling error
       }
@@ -198,8 +201,57 @@
         if (btn) {
           btn.className = 'btn ' + (isRunning ? 'btn-running' : '');
           btn.innerText = isRunning ? '● Прогрев идёт' : '▶ Старт';
+          btn.disabled = isRunning;
         }
+        const stopBtn = document.getElementById('btn_stop_' + i);
+        if (stopBtn) stopBtn.style.display = isRunning ? 'inline-block' : 'none';
       });
+      updateBulkButtons();
+    }
+
+    function updateBulkButtons() {
+      const bulkBtn = document.getElementById('startBulkBtn');
+      const stopAllBtn = document.getElementById('stopAllBtn');
+      const anyRunning = activeWorkers.length > 0;
+      if (bulkBtn) {
+        bulkBtn.className = 'btn' + (anyRunning ? ' btn-running' : '');
+        bulkBtn.innerText = anyRunning ? `● Активно воркеров: ${activeWorkers.length}` : '🚀 Запустить прогрев выбранных';
+      }
+      if (stopAllBtn) stopAllBtn.style.display = anyRunning ? 'inline-block' : 'none';
+    }
+
+    async function stopSingle(accountId, btnEl) {
+      if (btnEl) { btnEl.innerText = '⏳ Остановка...'; btnEl.disabled = true; }
+      try {
+        const res = await fetch('/api/worker/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountId })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Остановлено');
+      } catch (e) {
+        showToast('Ошибка остановки: ' + e.message, true);
+      }
+      await loadStatus(true);
+    }
+
+    async function stopAllWarmup() {
+      const btn = document.getElementById('stopAllBtn');
+      if (btn) { btn.innerText = '⏳ Остановка...'; btn.disabled = true; }
+      try {
+        const res = await fetch('/api/worker/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: 'all' })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Все воркеры остановлены');
+      } catch (e) {
+        showToast('Ошибка остановки: ' + e.message, true);
+      }
+      if (btn) { btn.innerText = '⏹ Остановить всё'; btn.disabled = false; }
+      await loadStatus(true);
     }
 
     function renderLogs(logs) {
@@ -326,9 +378,14 @@
             </div>
           </td>
           <td>
-            <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)">
-              ${isRunning ? '● Прогрев идёт' : '▶ Старт'}
-            </button>
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)" ${isRunning ? 'disabled' : ''}>
+                ${isRunning ? '● Прогрев идёт' : '▶ Старт'}
+              </button>
+              <button id="btn_stop_${i}" class="btn btn-stop" style="padding: 4px 10px; font-size: 11px; display: ${isRunning ? 'inline-block' : 'none'};" onclick="stopSingle('${acc.account_id}', this)">
+                ■ Стоп
+              </button>
+            </div>
           </td>
         </tr>
       `;}).join('');
