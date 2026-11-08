@@ -48,7 +48,10 @@ def add_log(msg):
     live_logs.append(entry)
     if len(live_logs) > MAX_LOGS:
         live_logs.pop(0)
-    print(entry)
+    try:
+        print(entry)
+    except Exception:
+        pass
 
 def load_config():
     if CONFIG_FILE.exists():
