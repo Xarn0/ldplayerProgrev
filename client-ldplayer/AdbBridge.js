@@ -60,10 +60,12 @@ class AdbBridge {
         const ry = y + Math.floor(Math.random() * 8 - 4);
         await this.shell(`input tap ${rx} ${ry}`);
     }
-    async humanSwipe(startY, endY, x = 360) {
-        const duration = Math.floor(Math.random() * 350 + 250);
-        const endX = x + Math.floor(Math.random() * 40 - 20);
-        await this.shell(`input swipe ${x} ${startY} ${endX} ${endY} ${duration}`);
+    async humanSwipe(startY, endY, startX = 360) {
+        // Человеческий свайп по дуге (кривая с легким смещением вправо/влево)
+        const duration = Math.floor(Math.random() * 200 + 260);
+        const curveOffset = Math.floor(Math.random() * 30 - 15);
+        const endX = startX + curveOffset + Math.floor(Math.random() * 20 - 10);
+        await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
     }
     async sendText(text) {
         const formatted = text.replace(/ /g, '%s').replace(/"/g, '\\"');

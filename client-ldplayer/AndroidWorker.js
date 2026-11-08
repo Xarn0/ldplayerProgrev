@@ -121,8 +121,39 @@ class AndroidWarmupWorker {
                         console.log(`[${account.username}] 👁️ Watched Reel #${reels} (${watchSec}s)`);
                     }
 
-                    // Отказоустойчивый свайп к следующему Reel
-                    await this.adb.humanSwipe(950, 250);
+                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 1: Чтение комментариев (каждые 6-9 рилсов с вероятностью 15%)
+                    if (Math.random() < 0.15) {
+                        const readCommSec = Math.floor(Math.random() * 5 + 4);
+                        console.log(`[${account.username}] 💬 Opening comments to read discussion (${readCommSec}s)...`);
+                        await this.adb.humanTap(685, 1070); // иконка комментариев под лайком
+                        await new Promise(r => setTimeout(r, 1500));
+                        // Листаем комментарии вниз
+                        await this.adb.humanSwipe(800, 450);
+                        await new Promise(r => setTimeout(r, readCommSec * 1000));
+                        // Закрываем комментарии свайпом или Back
+                        await this.adb.pressKey(4);
+                        await new Promise(r => setTimeout(r, 1200));
+                    }
+
+                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 2: Сохранение видео в закладки (Save, 5-8% случаев)
+                    if (Math.random() < 0.07) {
+                        console.log(`[${account.username}] 🔖 Bookmark saved (high engagement signal)`);
+                        await this.adb.humanTap(685, 1220); // иконка закладки
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+
+                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 3: Пересмотр назад (Backtrack, 4% случаев)
+                    if (Math.random() < 0.04 && reels > 1) {
+                        console.log(`[${account.username}] ↩️ Backtrack: swiped back to re-watch previous reel`);
+                        await this.adb.humanSwipe(250, 950); // свайп вниз для возврата
+                        await new Promise(r => setTimeout(r, Math.floor(Math.random() * 4 + 3) * 1000));
+                        // Возвращаемся вперед
+                        await this.adb.humanSwipe(950, 250);
+                        await new Promise(r => setTimeout(r, 1000));
+                    } else {
+                        // Обычный человеческий свайп вперед с дугой
+                        await this.adb.humanSwipe(950, 250);
+                    }
                     consecutiveErrors = 0;
                 } else {
                     console.log(`[${account.username}] Reached target limit of ${reels} reels!`);
