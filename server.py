@@ -71,31 +71,20 @@ def get_adb_devices():
     return devices
 
 def get_device_for_index(instance_idx):
-    """
-    Resolves the exact ADB device serial for a given LDPlayer instance index.
-    Checks running emulators and maps via properties or ports.
-    """
     adb_devs = get_adb_devices()
     if not adb_devs:
         return None
-    
-    # Standard LDPlayer port formula: 5554 + idx * 2
     try:
         expected = f"emulator-{5554 + int(instance_idx) * 2}"
         if expected in adb_devs:
             return expected
     except Exception:
         pass
-
-    # If only one emulator running and index requested
     if len(adb_devs) == 1:
         return adb_devs[0]
-
-    # Check if instance_idx is within bounds
     idx = int(instance_idx)
     if idx < len(adb_devs):
         return adb_devs[idx]
-
     return adb_devs[0] if adb_devs else None
 
 def list_ld_instances():
@@ -115,14 +104,9 @@ def list_ld_instances():
         if dev and dev in adb_devs:
             inst["running"] = True
             inst["device_id"] = dev
-
     return instances
 
 def detect_instagram_accounts(instance_idx=0, scan_all=False):
-    """
-    Accurately extracts ONLY logged-in accounts from Instagram Account Switcher / Preferences.
-    Excludes searched users, followings, threads or suggestions.
-    """
     adb_devs = get_adb_devices()
     if not adb_devs:
         return []
@@ -133,7 +117,6 @@ def detect_instagram_accounts(instance_idx=0, scan_all=False):
     for dev in target_devices:
         if not dev:
             continue
-        # Read the main Instagram preference file
         cmd = [
             str(ADB_EXE), "-s", dev, "shell",
             "su -c 'cat /data/data/com.instagram.android/shared_prefs/com.instagram.android_preferences.xml 2>/dev/null'"
@@ -143,29 +126,17 @@ def detect_instagram_accounts(instance_idx=0, scan_all=False):
             continue
 
         device_accs = []
-        # 1. Exact Account Switcher Map: account_linking_family_map_data
         family_match = re.search(r'name="account_linking_family_map_data">(.*?)</string>', xml, re.DOTALL)
         if family_match:
             raw_content = family_match.group(1)
             usernames = re.findall(r'username\\&quot;:\\&quot;([^\\&"]+)\\&quot;', raw_content)
             device_accs.extend(usernames)
 
-        # 2. Currently active logged in user in 'current' tag
         current_match = re.search(r'name="current">([^<]+)</string>', xml)
         if current_match:
             curr_text = current_match.group(1)
             curr_users = re.findall(r'&quot;username&quot;:&quot;([^&"]+)&quot;', curr_text)
             device_accs.extend(curr_users)
-
-        # 3. Fallback: multiple_accounts.xml
-        cmd2 = [
-            str(ADB_EXE), "-s", dev, "shell",
-            "su -c 'cat /data/data/com.instagram.android/shared_prefs/*multiple_account*.xml 2>/dev/null'"
-        ]
-        xml2 = run_cmd(cmd2)
-        if xml2:
-            m_users = re.findall(r'username&quot;:&quot;([^&"]+)&quot;', xml2)
-            device_accs.extend(m_users)
 
         for u in device_accs:
             u = u.strip()
@@ -177,6 +148,85 @@ def detect_instagram_accounts(instance_idx=0, scan_all=False):
                     })
 
     return found_accounts
+
+def sync_client_runner_config(target_accounts):
+    """Generates dynamic config for the client-ldplayer runner."""
+    client_dir = BASE_DIR.parent / "client-ldplayer"
+    client_cfg_file = client_dir / "config.json"
+    
+    # Group accounts by device_id
+    dev_map = {}
+    for acc in target_accounts:
+        dev = acc.get("device_id") or "emulator-5554"
+        if dev not in dev_map:
+            dev_map[dev] = []
+        dev_map[dev].append({
+            "account_id": acc.get("account_id") or acc.get("username"),
+            "username": acc.get("username"),
+            "niche_tags": acc.get("niche_tags") or ["dogs", "reels", "puppy"],
+            "daily_limits": { "max_likes": 20, "max_reels": 40, "max_comments": 3 },
+            "session_minutes": [8, 15]
+        })
+
+    instances_list = []
+    for i, (dev, accs) in enumerate(dev_map.items()):
+        instances_list.append({
+            "instance_id": f"LDPlayer-{i}",
+            "adb_device": dev,
+            "nekobox_package": "moe.nb4a",
+            "accounts": accs
+        })
+
+    runner_cfg = {
+        "server_hub": {
+            "api_url": CENTRAL_HUB,
+            "api_key": CENTRAL_TOKEN,
+            "sync_interval_seconds": 10
+        },
+        "ldplayer_path": str(LD_DIR),
+        "instances": instances_list,
+        "content_generation": {
+            "llm_enabled": False,
+            "fallback_spintax": [
+                "{Awesome|So good|Love this}! {🐶|🐾|❤️}",
+                "Those eyes are {everything|so cute}! 😍",
+                "{Such a good|Beautiful} {dog|pup}! {✨|🐕}"
+            ]
+        }
+    }
+
+    with open(client_cfg_file, "w", encoding="utf-8") as f:
+        json.dump(runner_cfg, f, indent=2, ensure_ascii=False)
+
+def run_worker_thread(account_ids):
+    cfg = load_config()
+    target_accs = [a for a in cfg.get("accounts", []) if a.get("account_id") in account_ids or a.get("username") in account_ids]
+    if not target_accs:
+        # If not found, synthesize from requested IDs
+        target_accs = [{"account_id": aid, "username": aid, "device_id": "emulator-5554"} for aid in account_ids]
+
+    sync_client_runner_config(target_accs)
+    runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
+    print(f"[Worker] Spawning Node.js runner for {len(target_accs)} account(s)...")
+    try:
+        proc = subprocess.Popen(
+            ["node", str(runner_script)],
+            cwd=str(runner_script.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore"
+        )
+        for line in proc.stdout:
+            print(f"[Engine] {line.strip()}")
+        proc.wait()
+    except Exception as e:
+        print(f"[Worker] Error: {e}")
+    finally:
+        for aid in account_ids:
+            active_threads.pop(aid, None)
+        print("[Worker] Finished warmup cycle.")
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -262,31 +312,43 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/worker/start":
             account_id = data.get("account_id")
-            idx = data.get("index", 0)
-            if account_id in active_threads:
+            if not account_id:
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": "Воркер уже запущен для этого аккаунта"}).encode("utf-8"))
+                self.wfile.write(json.dumps({"ok": False, "error": "Не указан account_id"}).encode("utf-8"))
                 return
 
-            def worker_task():
-                print(f"[Worker] Started warmup for {account_id} on LDPlayer {idx}")
-                runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
-                if runner_script.exists():
-                    subprocess.run(["node", str(runner_script)], cwd=str(runner_script.parent))
-                else:
-                    time.sleep(30)
-                active_threads.pop(account_id, None)
+            if account_id in active_threads:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "message": "Воркер уже работает для этого аккаунта"}))
+                return
 
-            t = threading.Thread(target=worker_task, daemon=True)
+            t = threading.Thread(target=run_worker_thread, args=([account_id],), daemon=True)
             active_threads[account_id] = t
             t.start()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "message": f"Прогрев {account_id} запущен"}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": True, "message": f"Прогрев @{account_id} запущен", "active_workers": list(active_threads.keys())}).encode("utf-8"))
+            return
+
+        if parsed.path == "/api/worker/start-bulk":
+            account_ids = data.get("account_ids", [])
+            to_start = [a for a in account_ids if a not in active_threads]
+            if to_start:
+                t = threading.Thread(target=run_worker_thread, args=(to_start,), daemon=True)
+                for a in to_start:
+                    active_threads[a] = t
+                t.start()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "message": f"Запущен прогрев для {len(to_start)} аккаунтов", "active_workers": list(active_threads.keys())}).encode("utf-8"))
             return
 
         if parsed.path == "/api/worker/stop":

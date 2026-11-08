@@ -31,7 +31,7 @@
     .btn:hover { background: var(--primary-hover); }
     .btn-secondary { background: #374151; color: var(--text); }
     .btn-secondary:hover { background: #4b5563; }
-    .btn-danger { background: #ef4444; color: #fff; }
+    .btn-running { background: #166534; color: #4ade80; border: 1px solid #22c55e; }
     
     .inst-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-bottom: 12px; }
     .inst-card { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; }
@@ -57,7 +57,6 @@
       <span class="badge-hub">Центральный хаб: 45.39.60.233:8098 (Online)</span>
     </header>
 
-    <!-- Эмуляторы LDPlayer -->
     <div class="panel">
       <div class="panel-title">
         <span>Эмуляторы LDPlayer на этом ПК</span>
@@ -70,7 +69,6 @@
       </div>
     </div>
 
-    <!-- Обнаруженные аккаунты Instagram -->
     <div class="panel">
       <div class="panel-title">
         <span>Авторизованные профили Instagram (Только ваши аккаунты)</span>
@@ -86,7 +84,7 @@
             <th>Аккаунт & Эмулятор</th>
             <th>Нишевые теги (через запятую)</th>
             <th>Лимиты / день</th>
-            <th>Действие</th>
+            <th>Статус / Действие</th>
           </tr>
         </thead>
         <tbody id="accountsBody">
@@ -99,13 +97,12 @@
       </table>
     </div>
 
-    <!-- Быстрый запуск -->
     <div class="panel" style="display: flex; justify-content: space-between; align-items: center;">
       <div>
         <h3 style="font-size: 15px; margin-bottom: 4px;">Автономный прогрев по расписанию</h3>
         <p style="font-size: 12px; color: var(--muted);">Движок автоматически держит интервалы, проверяет NekoBox VPN и пушит телеметрию в Контент-машину.</p>
       </div>
-      <button class="btn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
+      <button class="btn" id="startBulkBtn" style="padding: 10px 20px; font-size: 14px;" onclick="startSelectedWarmup()">🚀 Запустить прогрев выбранных</button>
     </div>
   </div>
 
@@ -113,6 +110,7 @@
 
   <script>
     let appConfig = {};
+    let activeWorkers = [];
 
     function showToast(msg, isErr = false) {
       const t = document.getElementById('toast');
@@ -127,6 +125,7 @@
         const res = await fetch('/api/status');
         const data = await res.json();
         appConfig = data.config || {};
+        activeWorkers = data.active_workers || [];
         renderInstances(data.instances || []);
         renderAccounts(appConfig.accounts || []);
       } catch (err) {
@@ -226,7 +225,9 @@
         tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted); padding: 24px;">Нет добавленных аккаунтов. Нажмите «Сканировать».</td></tr>';
         return;
       }
-      tbody.innerHTML = accounts.map((acc, i) => `
+      tbody.innerHTML = accounts.map((acc, i) => {
+        const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
+        return `
         <tr>
           <td><input type="checkbox" class="acc-check" data-idx="${i}" ${acc.enabled ? 'checked' : ''}></td>
           <td>
@@ -238,10 +239,12 @@
           </td>
           <td style="color: var(--muted); font-size: 12px;">${acc.limits || '30 Likes, 60 Reels'}</td>
           <td>
-            <button class="btn" style="padding: 4px 8px; font-size: 11px;" onclick="runSingle('${acc.account_id}')">Старт</button>
+            <button class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)">
+              ${isRunning ? '● Идёт прогрев' : '▶ Старт'}
+            </button>
           </td>
         </tr>
-      `).join('');
+      `;}).join('');
     }
 
     function toggleSelectAll() {
@@ -267,15 +270,32 @@
       });
     }
 
-    async function runSingle(accountId) {
-      showToast(`Запуск прогрева для ${accountId}...`);
-      const res = await fetch('/api/worker/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId })
-      });
-      const data = await res.json();
-      showToast(data.message || 'Запущено');
+    async function runSingle(accountId, btnEl) {
+      if (btnEl) {
+        btnEl.innerText = '⏳ Запуск...';
+        btnEl.disabled = true;
+      }
+      showToast(`Инициализация прогрева для @${accountId}...`);
+      try {
+        const res = await fetch('/api/worker/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountId })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Прогрев запущен');
+        if (btnEl) {
+          btnEl.className = 'btn btn-running';
+          btnEl.innerText = '● Идёт прогрев';
+          btnEl.disabled = false;
+        }
+      } catch (e) {
+        showToast('Ошибка запуска: ' + e.message, true);
+        if (btnEl) {
+          btnEl.innerText = '▶ Старт';
+          btnEl.disabled = false;
+        }
+      }
     }
 
     async function startSelectedWarmup() {
@@ -285,13 +305,29 @@
         showToast('Выберите хотя бы один аккаунт галочкой!', true);
         return;
       }
-      for (const a of enabledAccs) {
-        runSingle(a.account_id);
+      const bulkBtn = document.getElementById('startBulkBtn');
+      bulkBtn.innerText = '⏳ Запуск потоков...';
+      const ids = enabledAccs.map(a => a.account_id);
+      try {
+        const res = await fetch('/api/worker/start-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_ids: ids })
+        });
+        const data = await res.json();
+        showToast(data.message || 'Запущено');
+        bulkBtn.innerText = '● Прогрев активен';
+        bulkBtn.className = 'btn btn-running';
+        loadStatus();
+      } catch (e) {
+        showToast('Ошибка запуска: ' + e.message, true);
+        bulkBtn.innerText = '🚀 Запустить прогрев выбранных';
       }
-      showToast(`Запущен прогрев для ${enabledAccs.length} аккаунтов. Телеметрия передается в Контент-машину.`);
     }
 
     window.onload = loadStatus;
+    // Auto-refresh worker status every 10 seconds
+    setInterval(loadStatus, 10000);
   </script>
 </body>
 </html>
