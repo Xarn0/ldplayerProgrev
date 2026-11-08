@@ -323,7 +323,7 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "message": "Воркер уже работает для этого аккаунта"}))
+                self.wfile.write(json.dumps({"ok": True, "message": "Worker already active"}).encode("utf-8"))
                 return
 
             t = threading.Thread(target=run_worker_thread, args=([account_id],), daemon=True)
