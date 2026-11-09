@@ -124,12 +124,32 @@ class AdbBridge {
     }
     async getUiXml() {
         try {
-            const xml = await this.shell('uiautomator dump /dev/tty');
-            return xml;
+            await this.shell('uiautomator dump /data/local/tmp/dump.xml');
+            const xml = await this.shell('cat /data/local/tmp/dump.xml');
+            return xml || '';
         }
         catch {
             return '';
         }
+    }
+    async getCurrentInstagramUser() {
+        try {
+            const out = await this.shell('su 0 cat /data/data/com.instagram.android/shared_prefs/com.instagram.android_preferences.xml 2>/dev/null');
+            if (out) {
+                const m1 = out.match(/<string name="current">([\s\S]*?)<\/string>/);
+                if (m1) {
+                    const u = m1[1].match(/&quot;username&quot;:&quot;([^&"]+)&quot;/);
+                    if (u) return u[1];
+                }
+                const mId = out.match(/<string name="current_user_id">(\d+)<\/string>/);
+                if (mId) {
+                    const re = new RegExp(`&quot;id&quot;:&quot;${mId[1]}&quot;[\\s\\S]*?&quot;username&quot;:&quot;([^&"]+)&quot;`);
+                    const um = out.match(re);
+                    if (um) return um[1];
+                }
+            }
+        } catch {}
+        return null;
     }
     async checkVpnActive() {
         const res = await this.shell('ip route');

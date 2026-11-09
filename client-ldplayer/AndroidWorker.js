@@ -95,7 +95,11 @@ class AndroidWarmupWorker {
         // 3. Открываем / перезапускаем Instagram
         await this.adb.restartApp('com.instagram.android');
         // 4. Переключение на нужный аккаунт
-        await this.switchToAccount(account.username);
+        const switchOk = await this.switchToAccount(account.username);
+        if (!switchOk) {
+            console.error(`[${this.instanceId}] ❌ ОШИБКА: Не удалось активировать @${account.username}! Прерываем сессию во избежание работы на чужом профиле.`);
+            return false;
+        }
         // 5. Проверка чекпоинтов / блокировок
         const isBlocked = await this.checkCheckpoints(sessionId, account);
         if (isBlocked)
@@ -308,31 +312,86 @@ class AndroidWarmupWorker {
         return true;
     }
     /**
-     * Быстрое переключение между аккаунтами внутри одного Instagram
+     * Быстрое и надёжное переключение между аккаунтами внутри одного Instagram
      */
     async switchToAccount(targetUsername) {
-        console.log(`[${this.instanceId}] Switching to @${targetUsername}...`);
+        console.log(`[${this.instanceId}] 🔄 Проверка активного профиля для @${targetUsername}...`);
+
+        // Шаг 1: Проверяем реального пользователя в shared_prefs
+        let currentUser = await this.adb.getCurrentInstagramUser();
+        if (currentUser && currentUser.toLowerCase() === targetUsername.toLowerCase()) {
+            console.log(`[${this.instanceId}] ✅ Аккаунт @${targetUsername} уже активен!`);
+            return true;
+        }
+
+        console.log(`[${this.instanceId}] Сейчас активен: @${currentUser || 'неизвестен'}. Переключаемся на @${targetUsername}...`);
         const profileX = 648;
-        const profileY = 1225;
-        // Долгий тап на иконку профиля внизу справа
-        await this.adb.shell(`input swipe ${profileX} ${profileY} ${profileX} ${profileY} 1200`);
-        await new Promise(r => setTimeout(r, 2000));
-        const xml = await this.adb.getUiXml();
-        if (xml.includes(targetUsername)) {
-            const match = xml.match(new RegExp(`text="${targetUsername}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`));
-            if (match) {
-                const cx = Math.floor((parseInt(match[1]) + parseInt(match[3])) / 2);
-                const cy = Math.floor((parseInt(match[2]) + parseInt(match[4])) / 2);
-                await this.adb.humanTap(cx, cy);
-                await new Promise(r => setTimeout(r, 3000));
-                return;
+        const profileY = 1230;
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`[${this.instanceId}] Попытка смены аккаунта #${attempt}...`);
+
+            // Долгий тап на иконку профиля внизу справа для открытия шторки аккаунтов (1400 мс)
+            await this.adb.shell(`input swipe ${profileX} ${profileY} ${profileX} ${profileY} 1400`);
+            await new Promise(r => setTimeout(r, 2200));
+
+            // Дампим XML шторки
+            const xml = await this.adb.getUiXml();
+            let clicked = false;
+
+            if (xml) {
+                // Ищем по content-desc (в шторке Instagram юзернейм находится в content-desc)
+                const reDesc = new RegExp(`content-desc="([^"]*${targetUsername}[^"]*)"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i');
+                const m = xml.match(reDesc);
+
+                if (m) {
+                    const x1 = parseInt(m[2]), y1 = parseInt(m[3]), x2 = parseInt(m[4]), y2 = parseInt(m[5]);
+                    const cx = Math.floor((x1 + x2) / 2);
+                    const cy = Math.floor((y1 + y2) / 2);
+                    console.log(`[${this.instanceId}] 🎯 Найден @${targetUsername} в шторке! Тапаем (${cx}, ${cy})...`);
+                    await this.adb.humanTap(cx, cy);
+                    clicked = true;
+                } else {
+                    // Fallback по тексту
+                    const reText = new RegExp(`text="([^"]*${targetUsername}[^"]*)"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i');
+                    const mt = xml.match(reText);
+                    if (mt) {
+                        const x1 = parseInt(mt[2]), y1 = parseInt(mt[3]), x2 = parseInt(mt[4]), y2 = parseInt(mt[5]);
+                        const cx = Math.floor((x1 + x2) / 2);
+                        const cy = Math.floor((y1 + y2) / 2);
+                        console.log(`[${this.instanceId}] 🎯 Найден @${targetUsername} по text! Тапаем (${cx}, ${cy})...`);
+                        await this.adb.humanTap(cx, cy);
+                        clicked = true;
+                    }
+                }
+            }
+
+            if (!clicked) {
+                console.warn(`[${this.instanceId}] ⚠️ @${targetUsername} не найден в XML разметке шторки. Пробуем клик по позиции второго аккаунта (360, 872)...`);
+                await this.adb.humanTap(360, 872);
+            }
+
+            // Ожидаем завершения анимации перехода (3.5 сек)
+            await new Promise(r => setTimeout(r, 3500));
+
+            // Проверяем, какой аккаунт теперь активен
+            currentUser = await this.adb.getCurrentInstagramUser();
+            if (currentUser && currentUser.toLowerCase() === targetUsername.toLowerCase()) {
+                console.log(`[${this.instanceId}] 🚀 УСПЕШНО! Подтверждён активный аккаунт: @${targetUsername}`);
+                // Возвращаемся в ленту/Reels (клик по вкладке Главная)
+                await this.adb.humanTap(72, 1230);
+                await new Promise(r => setTimeout(r, 1500));
+                return true;
+            } else {
+                console.warn(`[${this.instanceId}] Попытка #${attempt} не удалась. Текущий юзер: @${currentUser || 'неизвестен'}`);
+                // Закрываем шторку назад перед следующей попыткой
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 1500));
             }
         }
-        // Fallback: дабл-тап по вкладке профиля
-        await this.adb.humanTap(profileX, profileY);
-        await new Promise(r => setTimeout(r, 150));
-        await this.adb.humanTap(profileX, profileY);
-        await new Promise(r => setTimeout(r, 3000));
+
+        console.error(`[${this.instanceId}] ❌ Не удалось переключиться на @${targetUsername} за 3 попытки!`);
+        return false;
     }
     async checkCheckpoints(sessionId, account) {
         const xml = await this.adb.getUiXml();
