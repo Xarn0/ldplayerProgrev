@@ -15,28 +15,39 @@ class AndroidWarmupWorker {
     async switchMode(mode, tags, username) {
         console.log(`[${username}] 🧭 Переключение режима на: [${mode}]`);
         try {
-            if (mode === 'REELS') {
-                // Клик по вкладке Reels (X: 215, Y: 1220)
-                await this.adb.humanTap(215, 1220);
-                await new Promise(r => setTimeout(r, 2200));
-            } else if (mode === 'FEED') {
-                // Клик по вкладке Главная лента (X: 90, Y: 1220)
-                await this.adb.humanTap(90, 1220);
-                await new Promise(r => setTimeout(r, 2200));
-            } else if (mode === 'SEARCH_TAGS') {
-                // Клик по Лупе (X: 500, Y: 1220)
-                await this.adb.humanTap(500, 1220);
-                await new Promise(r => setTimeout(r, 2000));
+            let tabId = '';
+            if (mode === 'REELS') tabId = 'clips_tab';
+            else if (mode === 'FEED') tabId = 'feed_tab';
+            else if (mode === 'SEARCH_TAGS') tabId = 'search_tab';
+
+            let tx = null, ty = null;
+            const xml = await this.adb.getUiXml();
+            if (xml && tabId) {
+                const tm = xml.match(new RegExp(`resource-id="[^"]*${tabId}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i'));
+                if (tm) {
+                    tx = Math.floor((parseInt(tm[1]) + parseInt(tm[3])) / 2);
+                    ty = Math.floor((parseInt(tm[2]) + parseInt(tm[4])) / 2);
+                }
+            }
+
+            if (tx === null || ty === null) {
+                if (mode === 'REELS') { tx = 504; ty = 1236; }
+                else if (mode === 'FEED') { tx = 72; ty = 1236; }
+                else if (mode === 'SEARCH_TAGS') { tx = 216; ty = 1236; }
+            }
+
+            await this.adb.humanTap(tx, ty);
+            await new Promise(r => setTimeout(r, 2200));
+
+            if (mode === 'SEARCH_TAGS') {
                 const pickTag = tags[Math.floor(Math.random() * tags.length)];
                 console.log(`[${username}] 🔍 Поиск по нишевому ключевому слову: "${pickTag}"`);
-                // Тап в поисковую строку вверху
                 await this.adb.humanTap(360, 100);
                 await new Promise(r => setTimeout(r, 1500));
                 await this.adb.sendText(pickTag);
                 await new Promise(r => setTimeout(r, 1000));
                 await this.adb.pressKey(66); // Enter
                 await new Promise(r => setTimeout(r, 3000));
-                // Открываем первое видео/пост из выдачи (X: 200, Y: 360)
                 await this.adb.humanTap(200, 360);
                 await new Promise(r => setTimeout(r, 2500));
             }
@@ -325,15 +336,31 @@ class AndroidWarmupWorker {
         }
 
         console.log(`[${this.instanceId}] Сейчас активен: @${currentUser || 'неизвестен'}. Переключаемся на @${targetUsername}...`);
-        const profileX = 648;
-        const profileY = 1230;
+        
+        const size = await this.adb.getScreenSize();
+        const isTablet = size.width > size.height;
+        let profileX = isTablet ? 48 : Math.floor(size.width * 0.90);
+        let profileY = isTablet ? Math.floor(size.height * 0.84) : Math.floor(size.height * 0.965);
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             console.log(`[${this.instanceId}] Попытка смены аккаунта #${attempt}...`);
 
+            // Динамически определяем точные координаты вкладки профиля
+            try {
+                const xmlBefore = await this.adb.getUiXml();
+                const pMatch = xmlBefore.match(/resource-id="[^"]*profile_tab"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
+                            || xmlBefore.match(/content-desc="Profile"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
+                            || xmlBefore.match(/content-desc="Профиль"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i);
+                if (pMatch) {
+                    profileX = Math.floor((parseInt(pMatch[1]) + parseInt(pMatch[3])) / 2);
+                    profileY = Math.floor((parseInt(pMatch[2]) + parseInt(pMatch[4])) / 2);
+                    console.log(`[${this.instanceId}] 📍 Вкладка профиля найдена по разметке: (${profileX}, ${profileY})`);
+                }
+            } catch {}
+
             // Долгий тап на иконку профиля внизу справа для открытия шторки аккаунтов (1400 мс)
             await this.adb.shell(`input swipe ${profileX} ${profileY} ${profileX} ${profileY} 1400`);
-            await new Promise(r => setTimeout(r, 2200));
+            await new Promise(r => setTimeout(r, 2400));
 
             // Дампим XML шторки
             const xml = await this.adb.getUiXml();
@@ -367,8 +394,10 @@ class AndroidWarmupWorker {
             }
 
             if (!clicked) {
-                console.warn(`[${this.instanceId}] ⚠️ @${targetUsername} не найден в XML разметке шторки. Пробуем клик по позиции второго аккаунта (360, 872)...`);
-                await this.adb.humanTap(360, 872);
+                const fbX = isTablet ? 800 : Math.floor(size.width / 2);
+                const fbY = isTablet ? Math.floor(size.height * 0.66) : Math.floor(size.height * 0.68);
+                console.warn(`[${this.instanceId}] ⚠️ @${targetUsername} не найден в XML разметке шторки. Пробуем клик по позиции второго аккаунта (${fbX}, ${fbY})...`);
+                await this.adb.humanTap(fbX, fbY);
             }
 
             // Ожидаем завершения анимации перехода (3.5 сек)

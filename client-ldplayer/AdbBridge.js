@@ -60,38 +60,54 @@ class AdbBridge {
         const ry = y + Math.floor(Math.random() * 8 - 4);
         await this.shell(`input tap ${rx} ${ry}`);
     }
+    async getScreenSize() {
+        if (this._screenSize) return this._screenSize;
+        try {
+            const out = await this.shell('wm size');
+            const m = out.match(/(?:Physical|Override)\s*size:\s*(\d+)x(\d+)/i);
+            if (m) {
+                this._screenSize = { width: parseInt(m[1]), height: parseInt(m[2]) };
+                return this._screenSize;
+            }
+        } catch {}
+        return { width: 720, height: 1280 };
+    }
     async reelsFlick(reverse = false) {
-        // Полноэкранный человеческий свайп Reels с дугой без зависания посередине
-        const startX = 360 + Math.floor(Math.random() * 60 - 30);
+        // Полноэкранный динамический человеческий свайп Reels с дугой
+        const sz = await this.getScreenSize();
+        const midX = Math.floor(sz.width / 2);
+        const startX = midX + Math.floor(Math.random() * 60 - 30);
         const curveOffset = Math.floor(Math.random() * 40 - 20);
         const endX = startX + curveOffset;
-        const duration = Math.floor(Math.random() * 60 + 190); // 190-250ms (быстрый естественный флик пальцем)
+        const duration = Math.floor(Math.random() * 60 + 190); // 190-250ms
 
         if (!reverse) {
-            // Листаем вперед: снизу экрана (1060px) вверх (160px)
-            const startY = 1060 + Math.floor(Math.random() * 50 - 25);
-            const endY = 160 + Math.floor(Math.random() * 50 - 25);
+            // Листаем вперед: снизу экрана (83%) вверх (13%)
+            const startY = Math.floor(sz.height * 0.83) + Math.floor(Math.random() * 40 - 20);
+            const endY = Math.floor(sz.height * 0.13) + Math.floor(Math.random() * 40 - 20);
             await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
         } else {
-            // Листаем назад (backtrack): сверху экрана (200px) вниз (1050px)
-            const startY = 200 + Math.floor(Math.random() * 50 - 25);
-            const endY = 1050 + Math.floor(Math.random() * 50 - 25);
+            // Листаем назад (backtrack): сверху экрана (16%) вниз (82%)
+            const startY = Math.floor(sz.height * 0.16) + Math.floor(Math.random() * 40 - 20);
+            const endY = Math.floor(sz.height * 0.82) + Math.floor(Math.random() * 40 - 20);
             await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
         }
     }
     async feedScroll() {
         // Человеческий скролл ленты постов (полный шаг на один пост без обрезания пополам)
-        const startX = 360 + Math.floor(Math.random() * 70 - 35);
+        const sz = await this.getScreenSize();
+        const midX = Math.floor(sz.width / 2);
+        const startX = midX + Math.floor(Math.random() * 70 - 35);
         const endX = startX + Math.floor(Math.random() * 40 - 20);
-        const startY = 1020 + Math.floor(Math.random() * 60 - 30);
-        const endY = 200 + Math.floor(Math.random() * 60 - 30);
+        const startY = Math.floor(sz.height * 0.80) + Math.floor(Math.random() * 40 - 20);
+        const endY = Math.floor(sz.height * 0.16) + Math.floor(Math.random() * 40 - 20);
         const duration = Math.floor(Math.random() * 80 + 210); // 210-290ms
         await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
         
-        // В 25% случаев живой человек делает легкую микро-доводку (доскролл на 100-140px)
+        // В 25% случаев живой человек делает легкую микро-доводку
         if (Math.random() < 0.25) {
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 300 + 400)));
-            const nudgeY1 = 700 + Math.floor(Math.random() * 30);
+            const nudgeY1 = Math.floor(sz.height * 0.55) + Math.floor(Math.random() * 30);
             const nudgeY2 = nudgeY1 - Math.floor(Math.random() * 60 + 80);
             await this.shell(`input swipe ${startX} ${nudgeY1} ${endX} ${nudgeY2} 240`);
         }
@@ -124,7 +140,7 @@ class AdbBridge {
     }
     async getUiXml() {
         try {
-            await this.shell('uiautomator dump /data/local/tmp/dump.xml');
+            await this.shell('rm -f /data/local/tmp/dump.xml && uiautomator dump /data/local/tmp/dump.xml');
             const xml = await this.shell('cat /data/local/tmp/dump.xml');
             return xml || '';
         }

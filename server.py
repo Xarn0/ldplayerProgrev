@@ -655,7 +655,12 @@ def main():
     print("Inside LDPlayer:   http://10.0.2.2:" + str(PORT))
     print("Central Cloud Hub: " + str(CENTRAL_HUB))
     print("=======================================================")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[OK] Сервер остановлен пользователем.")
+    finally:
+        server.server_close()
 
 if __name__ == "__main__":
     main()
