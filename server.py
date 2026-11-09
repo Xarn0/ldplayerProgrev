@@ -340,16 +340,16 @@ def run_worker_thread(account_ids):
             if cleaned:
                 add_log(cleaned)
                 # Парсинг прогресса в реальном времени из лога воркера
-                m_reels = re.search(r'\[([^\]]+)\]\s+👁️\s+Просмотр Reels:\s+\[(\d+)/(\d+)\](?:\s+\(лайков:\s+(\d+)/(\d+)\))?', cleaned)
+                m_reels = re.search(r'\[([^\]]+)\]\s+👁️\s+Просмотр(?:\s+\[[^\]]+\])?\s+(?:Reels:\s+\[|#)?(\d+)/(\d+)', cleaned)
                 if m_reels:
                     u, r, mr = m_reels.group(1), m_reels.group(2), m_reels.group(3)
-                    l, ml = m_reels.group(4), m_reels.group(5)
-                    update_account_progress(u, reels=r, max_reels=mr, likes=l, max_likes=ml, status="running")
+                    update_account_progress(u, reels=r, max_reels=mr, status="running")
 
-                m_likes = re.search(r'\[([^\]]+)\]\s+❤️\s+Поставлен лайк:\s+\[(\d+)/(\d+)\](?:\s+\(Reels:\s+(\d+)/(\d+)\))?', cleaned)
+                m_likes = re.search(r'\[([^\]]+)\]\s+❤️\s+Поставлен лайк:\s+\[?(\d+)/(\d+)\]?(?:\s+\(Reels:\s+(\d+)/(\d+)\))?', cleaned)
                 if m_likes:
                     u, l, ml = m_likes.group(1), m_likes.group(2), m_likes.group(3)
-                    r, mr = m_likes.group(4), m_likes.group(5)
+                    r = m_likes.group(4) if len(m_likes.groups()) >= 4 else None
+                    mr = m_likes.group(5) if len(m_likes.groups()) >= 5 else None
                     update_account_progress(u, reels=r, max_reels=mr, likes=l, max_likes=ml, status="running")
 
                 m_ip = re.search(r'Внешний IP(?:\s+прокси)?:\s+([^\s]+)', cleaned)

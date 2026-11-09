@@ -60,9 +60,52 @@ class AdbBridge {
         const ry = y + Math.floor(Math.random() * 8 - 4);
         await this.shell(`input tap ${rx} ${ry}`);
     }
+    async reelsFlick(reverse = false) {
+        // Полноэкранный человеческий свайп Reels с дугой без зависания посередине
+        const startX = 360 + Math.floor(Math.random() * 60 - 30);
+        const curveOffset = Math.floor(Math.random() * 40 - 20);
+        const endX = startX + curveOffset;
+        const duration = Math.floor(Math.random() * 60 + 190); // 190-250ms (быстрый естественный флик пальцем)
+
+        if (!reverse) {
+            // Листаем вперед: снизу экрана (1060px) вверх (160px)
+            const startY = 1060 + Math.floor(Math.random() * 50 - 25);
+            const endY = 160 + Math.floor(Math.random() * 50 - 25);
+            await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
+        } else {
+            // Листаем назад (backtrack): сверху экрана (200px) вниз (1050px)
+            const startY = 200 + Math.floor(Math.random() * 50 - 25);
+            const endY = 1050 + Math.floor(Math.random() * 50 - 25);
+            await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
+        }
+    }
+    async feedScroll() {
+        // Человеческий скролл ленты постов (полный шаг на один пост без обрезания пополам)
+        const startX = 360 + Math.floor(Math.random() * 70 - 35);
+        const endX = startX + Math.floor(Math.random() * 40 - 20);
+        const startY = 1020 + Math.floor(Math.random() * 60 - 30);
+        const endY = 200 + Math.floor(Math.random() * 60 - 30);
+        const duration = Math.floor(Math.random() * 80 + 210); // 210-290ms
+        await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
+        
+        // В 25% случаев живой человек делает легкую микро-доводку (доскролл на 100-140px)
+        if (Math.random() < 0.25) {
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 300 + 400)));
+            const nudgeY1 = 700 + Math.floor(Math.random() * 30);
+            const nudgeY2 = nudgeY1 - Math.floor(Math.random() * 60 + 80);
+            await this.shell(`input swipe ${startX} ${nudgeY1} ${endX} ${nudgeY2} 240`);
+        }
+    }
+    async commentsScroll(reverse = false) {
+        const startX = 360 + Math.floor(Math.random() * 60 - 30);
+        const endX = startX + Math.floor(Math.random() * 30 - 15);
+        const startY = reverse ? 450 : 880;
+        const endY = reverse ? 850 : 420;
+        const duration = Math.floor(Math.random() * 120 + 280);
+        await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);
+    }
     async humanSwipe(startY, endY, startX = 360) {
-        // Человеческий свайп по дуге (кривая с легким смещением вправо/влево)
-        const duration = Math.floor(Math.random() * 200 + 260);
+        const duration = Math.floor(Math.random() * 100 + 220);
         const curveOffset = Math.floor(Math.random() * 30 - 15);
         const endX = startX + curveOffset + Math.floor(Math.random() * 20 - 10);
         await this.shell(`input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`);

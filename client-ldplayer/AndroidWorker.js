@@ -12,6 +12,39 @@ class AndroidWarmupWorker {
         this.hub = hub;
         this.spintax = spintax;
     }
+    async switchMode(mode, tags, username) {
+        console.log(`[${username}] 🧭 Переключение режима на: [${mode}]`);
+        try {
+            if (mode === 'REELS') {
+                // Клик по вкладке Reels (X: 215, Y: 1220)
+                await this.adb.humanTap(215, 1220);
+                await new Promise(r => setTimeout(r, 2200));
+            } else if (mode === 'FEED') {
+                // Клик по вкладке Главная лента (X: 90, Y: 1220)
+                await this.adb.humanTap(90, 1220);
+                await new Promise(r => setTimeout(r, 2200));
+            } else if (mode === 'SEARCH_TAGS') {
+                // Клик по Лупе (X: 500, Y: 1220)
+                await this.adb.humanTap(500, 1220);
+                await new Promise(r => setTimeout(r, 2000));
+                const pickTag = tags[Math.floor(Math.random() * tags.length)];
+                console.log(`[${username}] 🔍 Поиск по нишевому ключевому слову: "${pickTag}"`);
+                // Тап в поисковую строку вверху
+                await this.adb.humanTap(360, 100);
+                await new Promise(r => setTimeout(r, 1500));
+                await this.adb.sendText(pickTag);
+                await new Promise(r => setTimeout(r, 1000));
+                await this.adb.pressKey(66); // Enter
+                await new Promise(r => setTimeout(r, 3000));
+                // Открываем первое видео/пост из выдачи (X: 200, Y: 360)
+                await this.adb.humanTap(200, 360);
+                await new Promise(r => setTimeout(r, 2500));
+            }
+        } catch (err) {
+            console.warn(`[${username}] Не удалось гладко переключить режим: ${err.message}`);
+        }
+    }
+
     async runAccountSession(account) {
         const sessionId = `ses_${account.account_id}_${Date.now()}`;
         console.log(`\n==================================================`);
@@ -66,8 +99,9 @@ class AndroidWarmupWorker {
         // 5. Проверка чекпоинтов / блокировок
         const isBlocked = await this.checkCheckpoints(sessionId, account);
         if (isBlocked)
-            return;
-        // 6. Цикл прогрева с приоритетом нишевых тегов и высокой отказоустойчивостью
+            return false;
+
+        // 6. Человеческий динамический прогрев (Рандомные режимы: Лента / Рилсы / Поиск по тегам)
         const durationMin = Math.floor(Math.random() * (account.session_minutes[1] - account.session_minutes[0] + 1) + account.session_minutes[0]);
         const endTime = Date.now() + durationMin * 60 * 1000;
         let likes = 0;
@@ -76,120 +110,173 @@ class AndroidWarmupWorker {
         const tags = (account.niche_tags && account.niche_tags.length) ? account.niche_tags : ['dogs', 'pets', 'puppy'];
         console.log(`[${this.instanceId}] Warming up @${account.username} under tags: [${tags.join(', ')}] for ${durationMin} minutes...`);
 
-        // Отказоустойчивый вход в Explore и запуск первого нишевого Reels
-        let inReelsChain = false;
-        try {
-            // Переход на Explore (Лупа)
-            await this.adb.humanTap(504, 1230);
-            await new Promise(r => setTimeout(r, 2500));
-            // Тап по первому видео в Explore для старта нишевой цепочки Reels
-            await this.adb.humanTap(200, 350);
-            await new Promise(r => setTimeout(r, 3000));
-            inReelsChain = true;
-            console.log(`[${account.username}] Entered Reels niche chain via Explore`);
-        } catch (err) {
-            console.warn(`[${account.username}] Explore fallback to main Reels: ${err.message}`);
-        }
+        const availableModes = ['REELS', 'FEED', 'SEARCH_TAGS'];
+        let currentMode = availableModes[Math.floor(Math.random() * availableModes.length)];
+        let modeActionsLeft = Math.floor(Math.random() * 11 + 5); // 5-15 действий в режиме
+        console.log(`[${account.username}] 🎲 Стартовый режим: [${currentMode}] (на ${modeActionsLeft} действий)...`);
+        await this.switchMode(currentMode, tags, account.username);
 
         let consecutiveErrors = 0;
-        while (Date.now() < endTime) {
+        while (Date.now() < endTime && reels < account.daily_limits.max_reels) {
             try {
-                // ПРОВЕРКА ОТКАЗОУСТОЙЧИВОСТИ: VPN всё ещё активен?
+                // Проверка VPN туннеля
                 const vpnOk = await this.adb.checkVpnActive();
                 if (!vpnOk) {
                     console.error(`[${this.instanceId}] NekoBox dropped during session! Emergency stopping.`);
                     break;
                 }
 
-                if (reels < account.daily_limits.max_reels) {
-                    // Время просмотра видео: от 8 до 22 секунд (живой интерес)
-                    const watchSec = Math.floor(Math.random() * 14 + 8);
-                    await new Promise(r => setTimeout(r, watchSec * 1000));
-                    reels++;
-
-                    // Проверка на чекпоинты каждые 5 просмотров
-                    if (reels % 5 === 0) {
-                        const blocked = await this.checkCheckpoints(sessionId, account);
-                        if (blocked) {
-                            console.error(`[${account.username}] Terminating session due to checkpoint.`);
-                            break;
-                        }
+                // Проверка на чекпоинты каждые 5 действий
+                if (reels > 0 && reels % 5 === 0) {
+                    const blocked = await this.checkCheckpoints(sessionId, account);
+                    if (blocked) {
+                        console.error(`[${account.username}] Terminating session due to checkpoint.`);
+                        break;
                     }
-
-                    // Вероятность лайка (25-30% от просмотренных)
-                    if (Math.random() < 0.28 && likes < account.daily_limits.max_likes) {
-                        // Лайк по иконке сердечка Reels (X: 685, Y: 1000)
-                        await this.adb.humanTap(685, 1000);
-                        likes++;
-                        await this.hub.logAction({
-                            session_id: sessionId,
-                            account_id: account.account_id,
-                            username: account.username,
-                            action_type: 'like',
-                            reels_watched: reels,
-                            max_reels: account.daily_limits.max_reels,
-                            likes_given: likes,
-                            max_likes: account.daily_limits.max_likes,
-                            proxy_ip: proxyIp,
-                            details: `Liked Reel under niche [${tags.join(', ')}]`,
-                            duration_sec: watchSec
-                        });
-                        console.log(`[${account.username}] ❤️ Поставлен лайк: [${likes}/${account.daily_limits.max_likes}] (Reels: ${reels}/${account.daily_limits.max_reels})`);
-                    } else {
-                        await this.hub.logAction({
-                            session_id: sessionId,
-                            account_id: account.account_id,
-                            username: account.username,
-                            action_type: 'reels_watch',
-                            reels_watched: reels,
-                            max_reels: account.daily_limits.max_reels,
-                            likes_given: likes,
-                            max_likes: account.daily_limits.max_likes,
-                            proxy_ip: proxyIp,
-                            details: `Watched Reel for ${watchSec}s in [${tags.join(', ')}]`,
-                            duration_sec: watchSec
-                        });
-                        console.log(`[${account.username}] 👁️ Просмотр Reels: [${reels}/${account.daily_limits.max_reels}] (лайков: ${likes}/${account.daily_limits.max_likes})`);
-                    }
-
-                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 1: Чтение комментариев (каждые 6-9 рилсов с вероятностью 15%)
-                    if (Math.random() < 0.15) {
-                        const readCommSec = Math.floor(Math.random() * 5 + 4);
-                        console.log(`[${account.username}] 💬 Opening comments to read discussion (${readCommSec}s)...`);
-                        await this.adb.humanTap(685, 1070); // иконка комментариев под лайком
-                        await new Promise(r => setTimeout(r, 1500));
-                        // Листаем комментарии вниз
-                        await this.adb.humanSwipe(800, 450);
-                        await new Promise(r => setTimeout(r, readCommSec * 1000));
-                        // Закрываем комментарии свайпом или Back
-                        await this.adb.pressKey(4);
-                        await new Promise(r => setTimeout(r, 1200));
-                    }
-
-                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 2: Сохранение видео в закладки (Save, 5-8% случаев)
-                    if (Math.random() < 0.07) {
-                        console.log(`[${account.username}] 🔖 Bookmark saved (high engagement signal)`);
-                        await this.adb.humanTap(685, 1220); // иконка закладки
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
-
-                    // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 3: Пересмотр назад (Backtrack, 4% случаев)
-                    if (Math.random() < 0.04 && reels > 1) {
-                        console.log(`[${account.username}] ↩️ Backtrack: swiped back to re-watch previous reel`);
-                        await this.adb.humanSwipe(250, 950); // свайп вниз для возврата
-                        await new Promise(r => setTimeout(r, Math.floor(Math.random() * 4 + 3) * 1000));
-                        // Возвращаемся вперед
-                        await this.adb.humanSwipe(950, 250);
-                        await new Promise(r => setTimeout(r, 1000));
-                    } else {
-                        // Обычный человеческий свайп вперед с дугой
-                        await this.adb.humanSwipe(950, 250);
-                    }
-                    consecutiveErrors = 0;
-                } else {
-                    console.log(`[${account.username}] Reached target limit of ${reels} reels!`);
-                    break;
                 }
+
+                reels++;
+                modeActionsLeft--;
+
+                // 1. Рандомное время просмотра (разная степень человеческого интереса)
+                let watchSec;
+                const randInterest = Math.random();
+                if (randInterest < 0.20) {
+                    // Быстрый скип (не зацепило): 3-6 сек
+                    watchSec = Math.floor(Math.random() * 4 + 3);
+                } else if (randInterest < 0.75) {
+                    // Обычный интерес: 8-18 сек
+                    watchSec = Math.floor(Math.random() * 11 + 8);
+                } else {
+                    // Глубокий интерес: 20-35 сек
+                    watchSec = Math.floor(Math.random() * 16 + 20);
+                }
+
+                console.log(`[${account.username}] 👁️ Просмотр [${currentMode}] #${reels}/${account.daily_limits.max_reels} (${watchSec}s)...`);
+                await new Promise(r => setTimeout(r, watchSec * 1000));
+
+                let didLike = false;
+                let didRewatch = false;
+
+                // 2. Рандомные лайки (вероятность 28%, только если видео зацепило >=8s)
+                if (watchSec >= 8 && Math.random() < 0.28 && likes < account.daily_limits.max_likes) {
+                    if (currentMode === 'FEED') {
+                        // В ленте лайкаем естественным двойным тапом в центр
+                        await this.adb.humanTap(360, 600);
+                        await new Promise(r => setTimeout(r, 120));
+                        await this.adb.humanTap(360, 600);
+                    } else {
+                        // В Reels тап по сердечку
+                        await this.adb.humanTap(685, 1000);
+                    }
+                    likes++;
+                    didLike = true;
+
+                    await this.hub.logAction({
+                        session_id: sessionId,
+                        account_id: account.account_id,
+                        username: account.username,
+                        action_type: 'like',
+                        reels_watched: reels,
+                        max_reels: account.daily_limits.max_reels,
+                        likes_given: likes,
+                        max_likes: account.daily_limits.max_likes,
+                        proxy_ip: proxyIp,
+                        details: `Liked in [${currentMode}] under niche [${tags.join(', ')}]`,
+                        duration_sec: watchSec
+                    });
+                    console.log(`[${account.username}] ❤️ Поставлен лайк: [${likes}/${account.daily_limits.max_likes}] (Reels: ${reels}/${account.daily_limits.max_reels})`);
+
+                    // ОБЯЗАТЕЛЬНЫЙ ДОСМОТР ВИДЕО ДО КОНЦА ПОСЛЕ ЛАЙКА
+                    const finishWatchSec = Math.floor(Math.random() * 9 + 12); // 12-20 сек
+                    console.log(`[${account.username}] ⏳ Обязательный досмотр видео до конца после лайка (+${finishWatchSec}s)...`);
+                    await new Promise(r => setTimeout(r, finishWatchSec * 1000));
+
+                    // ПЕРЕСМОТР ОТ 1 ДО 3 РАЗ (35% вероятность)
+                    if (Math.random() < 0.35) {
+                        const rewatchLoops = Math.floor(Math.random() * 3 + 1); // 1, 2 или 3 раза
+                        console.log(`[${account.username}] 🔁 Видео вызвало высокий интерес! Зацикленный пересмотр (${rewatchLoops} раз)...`);
+                        for (let loop = 1; loop <= rewatchLoops; loop++) {
+                            const loopDuration = Math.floor(Math.random() * 9 + 10); // 10-18 сек
+                            console.log(`[${account.username}] 🔁 Пересмотр: повтор ${loop}/${rewatchLoops} (+${loopDuration}s)...`);
+                            await new Promise(r => setTimeout(r, loopDuration * 1000));
+                        }
+                        didRewatch = true;
+                    }
+                } else {
+                    await this.hub.logAction({
+                        session_id: sessionId,
+                        account_id: account.account_id,
+                        username: account.username,
+                        action_type: 'reels_watch',
+                        reels_watched: reels,
+                        max_reels: account.daily_limits.max_reels,
+                        likes_given: likes,
+                        max_likes: account.daily_limits.max_likes,
+                        proxy_ip: proxyIp,
+                        details: `Watched in [${currentMode}] for ${watchSec}s`,
+                        duration_sec: watchSec
+                    });
+                }
+
+                // 3. ЧТЕНИЕ КОММЕНТАРИЕВ: если пересмотрели видео, то с вероятностью 50% листаем комментарии
+                if (didRewatch && Math.random() < 0.50) {
+                    console.log(`[${account.username}] 💬 Открытие комментариев к пересмотренному видео...`);
+                    // Открываем комментарии (в Reels: 685, 1070)
+                    await this.adb.humanTap(685, 1070);
+                    await new Promise(r => setTimeout(r, 1800));
+
+                    // Рандомный скролл комментариев 2-4 раза
+                    const commScrolls = Math.floor(Math.random() * 3 + 2);
+                    for (let s = 1; s <= commScrolls; s++) {
+                        await this.adb.commentsScroll(false);
+                        const readPauseSec = Math.floor(Math.random() * 4 + 3);
+                        console.log(`[${account.username}] 💬 Чтение комментариев (скролл ${s}/${commScrolls}, чтение ${readPauseSec}s)...`);
+                        await new Promise(r => setTimeout(r, readPauseSec * 1000));
+                    }
+                    // В 30% случаев слегка скроллим обратно вверх
+                    if (Math.random() < 0.30) {
+                        await this.adb.commentsScroll(true);
+                        await new Promise(r => setTimeout(r, 1500));
+                    }
+                    // Закрываем комментарии кнопкой Back
+                    await this.adb.pressKey(4);
+                    await new Promise(r => setTimeout(r, 1200));
+                }
+
+                // 4. Полноэкранный переход к следующему контенту
+                if (currentMode === 'FEED') {
+                    // Для ленты: глубокий скролл с микро-доводкой (без обрезания пополам)
+                    await this.adb.feedScroll();
+                } else {
+                    // Для Reels:
+                    // Редкий откат назад (Backtrack, 4% шанс)
+                    if (Math.random() < 0.04 && reels > 1) {
+                        console.log(`[${account.username}] ↩️ Пересмотр назад (Backtrack к предыдущему ролику)...`);
+                        await this.adb.reelsFlick(true);
+                        await new Promise(r => setTimeout(r, 3500));
+                        await this.adb.reelsFlick(false);
+                    } else {
+                        // Полноэкранный человеческий флик без застреваний
+                        await this.adb.reelsFlick(false);
+                    }
+                }
+
+                // Естественная микропауза между роликами (1.2 - 2.5 сек)
+                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1300 + 1200)));
+
+                // 5. Проверка смены активности (Лента / Рилсы / Поиск)
+                if (modeActionsLeft <= 0) {
+                    const otherModes = availableModes.filter(m => m !== currentMode);
+                    if (Math.random() < 0.75) {
+                        currentMode = otherModes[Math.floor(Math.random() * otherModes.length)];
+                    }
+                    modeActionsLeft = Math.floor(Math.random() * 11 + 5); // 5-15 действий
+                    console.log(`\n[${account.username}] 🎲 Смена активности: переключение в режим [${currentMode}] на следующие ${modeActionsLeft} действий...`);
+                    await this.switchMode(currentMode, tags, account.username);
+                }
+
+                consecutiveErrors = 0;
             } catch (err) {
                 consecutiveErrors++;
                 console.error(`[${account.username}] Watchdog caught interaction error (${consecutiveErrors}/3):`, err.message);
@@ -197,17 +284,15 @@ class AndroidWarmupWorker {
                     console.warn(`[${account.username}] 3 consecutive errors. Self-healing: restarting app...`);
                     await this.adb.restartApp('com.instagram.android');
                     await this.switchToAccount(account.username);
-                    await this.adb.humanTap(504, 1230);
-                    await new Promise(r => setTimeout(r, 2000));
-                    await this.adb.humanTap(200, 350);
+                    await this.switchMode(currentMode, tags, account.username);
                     consecutiveErrors = 0;
                 } else {
-                    // Мягкий recovery: нажать Back
                     await this.adb.pressKey(4);
                     await new Promise(r => setTimeout(r, 2000));
                 }
             }
         }
+
         // 7. Финал сессии
         await this.hub.endSession({
             session_id: sessionId,
