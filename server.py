@@ -95,12 +95,7 @@ def get_device_for_index(instance_idx):
             return expected
     except Exception:
         pass
-    if len(adb_devs) == 1:
-        return adb_devs[0]
-    idx = int(instance_idx)
-    if idx < len(adb_devs):
-        return adb_devs[idx]
-    return adb_devs[0] if adb_devs else None
+    return None
 
 def list_ld_instances():
     instances = []
@@ -199,7 +194,7 @@ def sync_client_runner_config(target_accounts):
 
     runner_cfg = {
         "server_hub": {
-            "api_url": CENTRAL_HUB,
+            "api_url": f"http://127.0.0.1:{PORT}",
             "api_key": CENTRAL_TOKEN,
             "sync_interval_seconds": 10
         },
@@ -218,11 +213,52 @@ def sync_client_runner_config(target_accounts):
     with open(client_cfg_file, "w", encoding="utf-8") as f:
         json.dump(runner_cfg, f, indent=2, ensure_ascii=False)
 
+def ensure_emulator_running(device_id):
+    adb_devs = get_adb_devices()
+    if device_id in adb_devs:
+        return True
+
+    idx = None
+    if device_id.startswith("emulator-"):
+        try:
+            port = int(device_id.split("-")[1])
+            idx = (port - 5554) // 2
+        except Exception:
+            pass
+
+    if idx is None:
+        add_log(f"[AutoLaunch] Не удалось вычислить индекс LDPlayer для {device_id}")
+        return False
+
+    add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) не запущен. Автозапуск окна...")
+    try:
+        subprocess.Popen([str(LDCONSOLE_EXE), "launch", "--index", str(idx)], cwd=str(LD_DIR))
+    except Exception as e:
+        add_log(f"[AutoLaunch] Ошибка запуска LDPlayer #{idx}: {e}")
+        return False
+
+    for attempt in range(25):
+        time.sleep(2)
+        devs = get_adb_devices()
+        if device_id in devs:
+            boot = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "getprop", "sys.boot_completed"])
+            if boot == "1":
+                add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) успешно загружен и готов!")
+                time.sleep(4)
+                return True
+    add_log(f"[AutoLaunch] Предупреждение: тайм-аут ожидания загрузки {device_id}")
+    return False
+
 def run_worker_thread(account_ids):
     cfg = load_config()
     target_accs = [a for a in cfg.get("accounts", []) if a.get("account_id") in account_ids or a.get("username") in account_ids]
     if not target_accs:
         target_accs = [{"account_id": aid, "username": aid, "device_id": "emulator-5554"} for aid in account_ids]
+
+    # Автозапуск нужных эмуляторов, если они были закрыты
+    needed_devices = {acc.get("device_id") for acc in target_accs if acc.get("device_id")}
+    for dev in needed_devices:
+        ensure_emulator_running(dev)
 
     sync_client_runner_config(target_accs)
     runner_script = BASE_DIR.parent / "client-ldplayer" / "dist" / "index.js"
@@ -366,6 +402,13 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             data = json.loads(body)
         except Exception:
             data = {}
+
+        if parsed.path in ["/api/warmup/log", "/api/warmup/session/start", "/api/warmup/session/end", "/api/warmup/incident"]:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            return
 
         if parsed.path == "/api/config/save":
             save_config(data)

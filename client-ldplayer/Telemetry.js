@@ -52,7 +52,7 @@ class HubClient {
             clearTimeout(timeoutId);
         }
         catch (err) {
-            console.warn(`[HubClient] Failed to send telemetry to ${endpoint}: ${err.message}`);
+            // Silently ignore aborted/offline hub calls so we don't spam terminal
         }
     }
 }
