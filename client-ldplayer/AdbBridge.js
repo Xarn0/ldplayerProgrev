@@ -52,6 +52,19 @@ class AdbBridge {
             return stdout;
         }
         catch (err) {
+            if (err.message && (err.message.includes('not found') || err.message.includes('offline'))) {
+                try {
+                    const m = this.deviceId.match(/emulator-(\d+)/);
+                    if (m) {
+                        const adbPort = parseInt(m[1], 10) + 1;
+                        await execAsync(`"${this.adbExe}" connect 127.0.0.1:${adbPort}`);
+                        const retry = await execAsync(command);
+                        return retry.stdout;
+                    }
+                } catch {
+                    // ignore reconnect failure
+                }
+            }
             throw new Error(`[ADB ${this.deviceId}] Fail: ${err.message}`);
         }
     }

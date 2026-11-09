@@ -78,7 +78,31 @@ def run_cmd(cmd_list):
     except Exception:
         return ""
 
+def ensure_adb_connected(device_id):
+    if not device_id or not device_id.startswith("emulator-"):
+        return
+    try:
+        port = int(device_id.split("-")[1])
+        adb_port = port + 1
+        run_cmd([str(ADB_EXE), "connect", f"127.0.0.1:{adb_port}"])
+    except Exception:
+        pass
+
 def get_adb_devices():
+    # Пробуем автоматически подключить порты эмуляторов из конфига
+    try:
+        cfg = load_config()
+        for a in cfg.get("accounts", []):
+            d = a.get("device_id")
+            if d and d.startswith("emulator-"):
+                try:
+                    p = int(d.split("-")[1])
+                    run_cmd([str(ADB_EXE), "connect", f"127.0.0.1:{p + 1}"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     output = run_cmd([str(ADB_EXE), "devices"])
     devices = []
     for line in output.splitlines():
@@ -246,6 +270,7 @@ def update_account_progress(username, reels=None, max_reels=None, likes=None, ma
     p["updated_at"] = time.time()
 
 def ensure_emulator_running(device_id):
+    ensure_adb_connected(device_id)
     adb_devs = get_adb_devices()
     is_running = device_id in adb_devs
 
@@ -262,7 +287,7 @@ def ensure_emulator_running(device_id):
         return False
 
     if not is_running:
-        add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) не запущен. Автозапуск окна...")
+        add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) не подключен к ADB. Запуск/подключение окна...")
         try:
             subprocess.Popen([str(LDCONSOLE_EXE), "launch", "--index", str(idx)], cwd=str(LD_DIR))
         except Exception as e:
@@ -270,8 +295,9 @@ def ensure_emulator_running(device_id):
             return False
 
         booted = False
-        for attempt in range(25):
+        for attempt in range(30):
             time.sleep(2)
+            ensure_adb_connected(device_id)
             devs = get_adb_devices()
             if device_id in devs:
                 boot = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "getprop", "sys.boot_completed"])
