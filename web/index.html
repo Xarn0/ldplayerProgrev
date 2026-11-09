@@ -53,6 +53,13 @@
     .device-badge { font-size: 10px; background: rgba(255, 255, 255, 0.07); padding: 2px 6px; border-radius: 4px; color: var(--muted); margin-left: 6px; font-family: monospace; }
     
     .live-console { background: #000; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #38bdf8; height: 180px; overflow-y: auto; line-height: 1.5; white-space: pre-wrap; }
+    .progress-wrap { margin-top: 6px; width: 100%; max-width: 210px; }
+    .progress-bar { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-top: 3px; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); transition: width 0.3s ease; }
+    .progress-text { font-size: 11px; font-weight: 600; color: #38bdf8; display: flex; justify-content: space-between; font-family: monospace; }
+    .proxy-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; font-family: monospace; margin-top: 4px; }
+    .proxy-ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+    .proxy-warn { background: rgba(234, 179, 8, 0.15); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.3); }
     .toast { position: fixed; bottom: 20px; right: 20px; background: #1f2937; border: 1px solid var(--border); padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: none; z-index: 1000; }
   </style>
 </head>
@@ -132,6 +139,7 @@
   <script>
     let appConfig = {};
     let activeWorkers = [];
+    let accountProgress = {};
     let isEditing = false;
 
     function showToast(msg, isErr = false) {
@@ -148,6 +156,7 @@
         const data = await res.json();
         appConfig = data.config || {};
         activeWorkers = data.active_workers || [];
+        accountProgress = data.progress || {};
         renderInstances(data.instances || []);
         renderLogs(data.logs || []);
 
@@ -197,10 +206,38 @@
     function updateWorkersBadges() {
       (appConfig.accounts || []).forEach((acc, i) => {
         const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
+        const prog = accountProgress[acc.username] || accountProgress[acc.account_id] || { reels: 0, likes: 0 };
+        const lim = acc.limits || { reels: 30, likes: 15, comments: 2 };
+        const maxR = lim.reels || 30;
+        const maxL = lim.likes || 15;
+        const curR = prog.reels || 0;
+        const curL = prog.likes || 0;
+        const pct = Math.min(100, Math.round((curR / Math.max(1, maxR)) * 100));
+
+        const txtEl = document.getElementById('prog_txt_' + i);
+        if (txtEl) {
+          txtEl.innerHTML = `<span>🎬 Reels: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+        }
+        const fillEl = document.getElementById('prog_fill_' + i);
+        if (fillEl) {
+          fillEl.style.width = pct + '%';
+        }
+        const vpnEl = document.getElementById('prog_vpn_' + i);
+        if (vpnEl && prog.proxy_ip) {
+          vpnEl.className = 'proxy-badge proxy-ok';
+          vpnEl.innerHTML = '🛡️ VPN: ' + prog.proxy_ip;
+        }
+
         const btn = document.getElementById('btn_action_' + i);
         if (btn) {
           btn.className = 'btn ' + (isRunning ? 'btn-running' : '');
-          btn.innerText = isRunning ? '● Прогрев идёт' : '▶ Старт';
+          if (isRunning) {
+            btn.innerText = `● ${curR}/${maxR} Reels`;
+          } else if (curR >= maxR && maxR > 0) {
+            btn.innerText = `✅ Завершено (${curR}/${maxR})`;
+          } else {
+            btn.innerText = '▶ Старт';
+          }
           btn.disabled = isRunning;
         }
         const stopBtn = document.getElementById('btn_stop_' + i);
@@ -357,15 +394,39 @@
       tbody.innerHTML = accounts.map((acc, i) => {
         const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
         const lim = acc.limits || { reels: 30, likes: 15, comments: 2 };
+        const prog = accountProgress[acc.username] || accountProgress[acc.account_id] || { reels: 0, likes: 0 };
+        const maxR = lim.reels || 30;
+        const maxL = lim.likes || 15;
+        const curR = prog.reels || 0;
+        const curL = prog.likes || 0;
+        const pct = Math.min(100, Math.round((curR / Math.max(1, maxR)) * 100));
+        const ip = prog.proxy_ip || '';
+
         return `
         <tr>
           <td><input type="checkbox" class="acc-check" data-idx="${i}" ${acc.enabled ? 'checked' : ''}></td>
           <td>
-            <strong>@${acc.username}</strong>
-            <span class="device-badge">${acc.device_id || 'LDPlayer'}</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+              <strong style="font-size: 14px;">@${acc.username}</strong>
+              <span class="device-badge">${acc.device_id || 'LDPlayer'}</span>
+            </div>
+
+            <div class="progress-wrap">
+              <div class="progress-text" id="prog_txt_${i}">
+                <span>🎬 Reels: ${curR}/${maxR}</span>
+                <span>❤️ ${curL}/${maxL}</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="prog_fill_${i}" style="width: ${pct}%;"></div>
+              </div>
+            </div>
+
+            <div id="prog_vpn_${i}" class="proxy-badge ${ip ? 'proxy-ok' : 'proxy-warn'}">
+              🛡️ ${ip ? 'VPN: ' + ip : 'VPN (NekoBox): Авто-проверка'}
+            </div>
           </td>
           <td>
-            <input type="text" class="tag-input" id="tags_${i}" value="${(acc.niche_tags || []).join(', ')}" placeholder="например: reels, crypto, design">
+            <input type="text" class="tag-input" id="tags_${i}" value="${(acc.niche_tags || []).join(', ')}" placeholder="например: dogs, reels, pets">
           </td>
           <td>
             <div class="limits-box">
@@ -379,8 +440,8 @@
           </td>
           <td>
             <div style="display: flex; flex-direction: column; gap: 4px;">
-              <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 4px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)" ${isRunning ? 'disabled' : ''}>
-                ${isRunning ? '● Прогрев идёт' : '▶ Старт'}
+              <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 5px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)" ${isRunning ? 'disabled' : ''}>
+                ${isRunning ? `● ${curR}/${maxR} Reels` : (curR >= maxR && maxR > 0 ? `✅ Завершено` : '▶ Старт')}
               </button>
               <button id="btn_stop_${i}" class="btn btn-stop" style="padding: 4px 10px; font-size: 11px; display: ${isRunning ? 'inline-block' : 'none'};" onclick="stopSingle('${acc.account_id}', this)">
                 ■ Стоп

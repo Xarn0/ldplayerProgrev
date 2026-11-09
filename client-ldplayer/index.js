@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -47,17 +47,17 @@ async function main() {
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const hub = new Telemetry_1.HubClient(cfg.server_hub.api_url, cfg.server_hub.api_key);
     console.log(`[MasterRunner] Initializing ${cfg.instances.length} LDPlayer instances...`);
-    // Запуск воркеров по каждому инстансу
+    // Р—Р°РїСѓСЃРє РІРѕСЂРєРµСЂРѕРІ РїРѕ РєР°Р¶РґРѕРјСѓ РёРЅСЃС‚Р°РЅСЃСѓ
     for (const inst of cfg.instances) {
         const adb = new AdbBridge_1.AdbBridge(inst.adb_device, cfg.ldplayer_path);
         const worker = new AndroidWorker_1.AndroidWarmupWorker(inst.instance_id, adb, hub, cfg.content_generation.fallback_spintax);
-        // В каждом эмуляторе по очереди запускаем оба аккаунта
+        // Р’ РєР°Р¶РґРѕРј СЌРјСѓР»СЏС‚РѕСЂРµ РїРѕ РѕС‡РµСЂРµРґРё Р·Р°РїСѓСЃРєР°РµРј РѕР±Р° Р°РєРєР°СѓРЅС‚Р°
         (async () => {
             while (true) {
                 for (const account of inst.accounts) {
                     try {
                         await worker.runAccountSession(account);
-                        // Пауза между аккаунтами внутри одного эмулятора (3-8 минут)
+                        // РџР°СѓР·Р° РјРµР¶РґСѓ Р°РєРєР°СѓРЅС‚Р°РјРё РІРЅСѓС‚СЂРё РѕРґРЅРѕРіРѕ СЌРјСѓР»СЏС‚РѕСЂР° (3-8 РјРёРЅСѓС‚)
                         const pauseMin = Math.floor(Math.random() * 5 + 3);
                         console.log(`[${inst.instance_id}] Waiting ${pauseMin} min before switching account...`);
                         await new Promise(r => setTimeout(r, pauseMin * 60 * 1000));
@@ -67,7 +67,7 @@ async function main() {
                         await new Promise(r => setTimeout(r, 30000));
                     }
                 }
-                // Пауза перед следующим общим циклом (3-4 часа)
+                // РџР°СѓР·Р° РїРµСЂРµРґ СЃР»РµРґСѓСЋС‰РёРј РѕР±С‰РёРј С†РёРєР»РѕРј (3-4 С‡Р°СЃР°)
                 console.log(`[${inst.instance_id}] Full cycle finished. Resting for 3 hours...`);
                 await new Promise(r => setTimeout(r, 3 * 60 * 60 * 1000));
             }

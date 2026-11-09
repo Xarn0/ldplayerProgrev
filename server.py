@@ -213,10 +213,39 @@ def sync_client_runner_config(target_accounts):
     with open(client_cfg_file, "w", encoding="utf-8") as f:
         json.dump(runner_cfg, f, indent=2, ensure_ascii=False)
 
+account_progress = {}
+
+def update_account_progress(username, reels=None, max_reels=None, likes=None, max_likes=None, proxy_ip=None, status=None):
+    if not username:
+        return
+    if username not in account_progress:
+        account_progress[username] = {
+            "reels": 0, "max_reels": 30,
+            "likes": 0, "max_likes": 15,
+            "proxy_ip": "",
+            "status": "idle",
+            "updated_at": time.time()
+        }
+    p = account_progress[username]
+    if reels is not None:
+        try: p["reels"] = int(reels)
+        except Exception: pass
+    if max_reels is not None:
+        try: p["max_reels"] = int(max_reels)
+        except Exception: pass
+    if likes is not None:
+        try: p["likes"] = int(likes)
+        except Exception: pass
+    if max_likes is not None:
+        try: p["max_likes"] = int(max_likes)
+        except Exception: pass
+    if proxy_ip: p["proxy_ip"] = proxy_ip
+    if status: p["status"] = status
+    p["updated_at"] = time.time()
+
 def ensure_emulator_running(device_id):
     adb_devs = get_adb_devices()
-    if device_id in adb_devs:
-        return True
+    is_running = device_id in adb_devs
 
     idx = None
     if device_id.startswith("emulator-"):
@@ -230,30 +259,59 @@ def ensure_emulator_running(device_id):
         add_log(f"[AutoLaunch] Не удалось вычислить индекс LDPlayer для {device_id}")
         return False
 
-    add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) не запущен. Автозапуск окна...")
-    try:
-        subprocess.Popen([str(LDCONSOLE_EXE), "launch", "--index", str(idx)], cwd=str(LD_DIR))
-    except Exception as e:
-        add_log(f"[AutoLaunch] Ошибка запуска LDPlayer #{idx}: {e}")
-        return False
+    if not is_running:
+        add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) не запущен. Автозапуск окна...")
+        try:
+            subprocess.Popen([str(LDCONSOLE_EXE), "launch", "--index", str(idx)], cwd=str(LD_DIR))
+        except Exception as e:
+            add_log(f"[AutoLaunch] Ошибка запуска LDPlayer #{idx}: {e}")
+            return False
 
-    for attempt in range(25):
+        booted = False
+        for attempt in range(25):
+            time.sleep(2)
+            devs = get_adb_devices()
+            if device_id in devs:
+                boot = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "getprop", "sys.boot_completed"])
+                if boot == "1":
+                    booted = True
+                    break
+        if not booted:
+            add_log(f"[AutoLaunch] Предупреждение: тайм-аут ожидания загрузки {device_id}")
+            return False
+        add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) загружен!")
+
+    # Проверка NekoBox VPN (туннель tun0)
+    add_log(f"[NekoBox] Проверка туннеля VPN (tun0) на {device_id}...")
+    for _ in range(12):
+        routes = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "ip", "route"])
+        if "tun0" in routes:
+            ip_info = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "curl -s --max-time 4 https://api.ipify.org"])
+            ip_str = ip_info.strip() if (ip_info and "<" not in ip_info and len(ip_info.strip()) < 40) else "tun0 активен"
+            add_log(f"[NekoBox] 🛡️ VPN туннель подтверждён на {device_id}! Внешний IP: {ip_str}")
+            return True
         time.sleep(2)
-        devs = get_adb_devices()
-        if device_id in devs:
-            boot = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "getprop", "sys.boot_completed"])
-            if boot == "1":
-                add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) успешно загружен и готов!")
-                time.sleep(4)
-                return True
-    add_log(f"[AutoLaunch] Предупреждение: тайм-аут ожидания загрузки {device_id}")
-    return False
+
+    add_log(f"[NekoBox] tun0 пока не активен. Запуск NekoBox на {device_id}...")
+    run_cmd([str(ADB_EXE), "-s", device_id, "shell", "am start -n moe.nb4a/moe.nb4a.ui.MainActivity"])
+    for _ in range(8):
+        time.sleep(2)
+        routes = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "ip", "route"])
+        if "tun0" in routes:
+            add_log(f"[NekoBox] 🛡️ VPN туннель успешно активирован на {device_id}!")
+            return True
+
+    add_log(f"[NekoBox] ⚠️ Предупреждение: VPN туннель не найден на {device_id}. Проверьте NekoBox.")
+    return True
 
 def run_worker_thread(account_ids):
     cfg = load_config()
     target_accs = [a for a in cfg.get("accounts", []) if a.get("account_id") in account_ids or a.get("username") in account_ids]
     if not target_accs:
         target_accs = [{"account_id": aid, "username": aid, "device_id": "emulator-5554"} for aid in account_ids]
+
+    for aid in account_ids:
+        update_account_progress(aid, status="starting")
 
     # Автозапуск нужных эмуляторов, если они были закрыты
     needed_devices = {acc.get("device_id") for acc in target_accs if acc.get("device_id")}
@@ -276,10 +334,34 @@ def run_worker_thread(account_ids):
         )
         for aid in account_ids:
             active_procs[aid] = proc
+            update_account_progress(aid, status="running")
         for line in proc.stdout:
             cleaned = line.strip()
             if cleaned:
                 add_log(cleaned)
+                # Парсинг прогресса в реальном времени из лога воркера
+                m_reels = re.search(r'\[([^\]]+)\]\s+👁️\s+Просмотр Reels:\s+\[(\d+)/(\d+)\](?:\s+\(лайков:\s+(\d+)/(\d+)\))?', cleaned)
+                if m_reels:
+                    u, r, mr = m_reels.group(1), m_reels.group(2), m_reels.group(3)
+                    l, ml = m_reels.group(4), m_reels.group(5)
+                    update_account_progress(u, reels=r, max_reels=mr, likes=l, max_likes=ml, status="running")
+
+                m_likes = re.search(r'\[([^\]]+)\]\s+❤️\s+Поставлен лайк:\s+\[(\d+)/(\d+)\](?:\s+\(Reels:\s+(\d+)/(\d+)\))?', cleaned)
+                if m_likes:
+                    u, l, ml = m_likes.group(1), m_likes.group(2), m_likes.group(3)
+                    r, mr = m_likes.group(4), m_likes.group(5)
+                    update_account_progress(u, reels=r, max_reels=mr, likes=l, max_likes=ml, status="running")
+
+                m_ip = re.search(r'Внешний IP(?:\s+прокси)?:\s+([^\s]+)', cleaned)
+                if m_ip:
+                    ip = m_ip.group(1)
+                    for aid in account_ids:
+                        update_account_progress(aid, proxy_ip=ip)
+
+                m_done = re.search(r'\[([^\]]+)\]\s+✅\s+Прогрев завершён:\s+(\d+)/(\d+)\s+Reels,\s+(\d+)/(\d+)\s+лайков', cleaned)
+                if m_done:
+                    u, r, mr, l, ml = m_done.groups()
+                    update_account_progress(u, reels=r, max_reels=mr, likes=l, max_likes=ml, status="done")
         proc.wait()
     except Exception as e:
         add_log(f"Ошибка воркера: {e}")
@@ -290,6 +372,7 @@ def run_worker_thread(account_ids):
                 active_threads.pop(aid, None)
             elif aid not in active_procs:
                 active_threads.pop(aid, None)
+            update_account_progress(aid, status="stopped")
         add_log("Сессия прогрева завершена.")
 
 
@@ -322,10 +405,14 @@ def stop_accounts(account_ids):
                 stopped.add(aid)
                 active_procs.pop(aid, None)
                 active_threads.pop(aid, None)
+                update_account_progress(aid, status="stopped")
     for aid in account_ids:
         if aid in active_threads:
             active_threads.pop(aid, None)
             stopped.add(aid)
+            update_account_progress(aid, status="stopped")
+        if aid in active_procs:
+            active_procs.pop(aid, None)
     return sorted(stopped)
 
 class WarmupHandler(http.server.SimpleHTTPRequestHandler):
@@ -352,6 +439,7 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 "config": cfg,
                 "instances": instances,
                 "active_workers": list(active_threads.keys()),
+                "progress": account_progress,
                 "logs": live_logs[-40:]
             }
             self.wfile.write(json.dumps(res).encode("utf-8"))
@@ -403,7 +491,25 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             data = {}
 
-        if parsed.path in ["/api/warmup/log", "/api/warmup/session/start", "/api/warmup/session/end", "/api/warmup/incident"]:
+        if parsed.path == "/api/warmup/log":
+            u = data.get("username") or data.get("account_id")
+            if u:
+                update_account_progress(
+                    u,
+                    reels=data.get("reels_watched"),
+                    max_reels=data.get("max_reels"),
+                    likes=data.get("likes_given"),
+                    max_likes=data.get("max_likes"),
+                    proxy_ip=data.get("proxy_ip"),
+                    status="running"
+                )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            return
+
+        if parsed.path in ["/api/warmup/session/start", "/api/warmup/session/end", "/api/warmup/incident"]:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

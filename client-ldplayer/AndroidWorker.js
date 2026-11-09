@@ -17,10 +17,20 @@ class AndroidWarmupWorker {
         console.log(`\n==================================================`);
         console.log(`[${this.instanceId}] STARTING SESSION FOR @${account.username}`);
         console.log(`==================================================`);
-        // 1. Проверка защищенного туннеля VPN (NekoBox)
-        const isVpnOn = await this.adb.checkVpnActive();
+        // 1. Проверка защищенного туннеля VPN (NekoBox) с автоматическим ожиданием
+        let isVpnOn = await this.adb.checkVpnActive();
         if (!isVpnOn) {
-            console.error(`[${this.instanceId}] CRITICAL: NekoBox VPN (tun0) is NOT active! Terminating to protect IP.`);
+            console.log(`[${this.instanceId}] ⏳ Ожидание подключения NekoBox VPN (tun0)...`);
+            for (let i = 0; i < 15; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                if (await this.adb.checkVpnActive()) {
+                    isVpnOn = true;
+                    break;
+                }
+            }
+        }
+        if (!isVpnOn) {
+            console.error(`[${this.instanceId}] ❌ КРИТИЧНО: NekoBox VPN (tun0) НЕ активен! Остановка сессии для защиты IP.`);
             await this.hub.reportIncident({
                 session_id: sessionId,
                 account_id: account.account_id,
@@ -28,15 +38,26 @@ class AndroidWarmupWorker {
                 incident_type: 'VPN_DISCONNECTED',
                 details: 'tun0 interface not found. NekoBox proxy dropped.'
             });
-            return;
+            return false;
         }
+
+        // Проверка внешнего IP прокси для прозрачности
+        let proxyIp = 'tun0';
+        try {
+            const probe = await this.adb.shell('curl -s --max-time 4 https://api.ipify.org');
+            if (probe && !probe.includes('<') && probe.trim().length > 6 && probe.trim().length < 50) {
+                proxyIp = probe.trim();
+            }
+        } catch {}
+        console.log(`[${this.instanceId}] 🛡️ NekoBox VPN активен! Внешний IP прокси: ${proxyIp}`);
+
         // 2. Отправка сигнала старта на сервер
         await this.hub.startSession({
             session_id: sessionId,
             account_id: account.account_id,
             username: account.username,
             instance_id: this.instanceId,
-            proxy_ip: 'nekobox_tun0'
+            proxy_ip: proxyIp
         });
         // 3. Открываем / перезапускаем Instagram
         await this.adb.restartApp('com.instagram.android');
@@ -105,20 +126,30 @@ class AndroidWarmupWorker {
                             account_id: account.account_id,
                             username: account.username,
                             action_type: 'like',
+                            reels_watched: reels,
+                            max_reels: account.daily_limits.max_reels,
+                            likes_given: likes,
+                            max_likes: account.daily_limits.max_likes,
+                            proxy_ip: proxyIp,
                             details: `Liked Reel under niche [${tags.join(', ')}]`,
                             duration_sec: watchSec
                         });
-                        console.log(`[${account.username}] ❤️ Liked Reel (total likes: ${likes}/${account.daily_limits.max_likes})`);
+                        console.log(`[${account.username}] ❤️ Поставлен лайк: [${likes}/${account.daily_limits.max_likes}] (Reels: ${reels}/${account.daily_limits.max_reels})`);
                     } else {
                         await this.hub.logAction({
                             session_id: sessionId,
                             account_id: account.account_id,
                             username: account.username,
                             action_type: 'reels_watch',
+                            reels_watched: reels,
+                            max_reels: account.daily_limits.max_reels,
+                            likes_given: likes,
+                            max_likes: account.daily_limits.max_likes,
+                            proxy_ip: proxyIp,
                             details: `Watched Reel for ${watchSec}s in [${tags.join(', ')}]`,
                             duration_sec: watchSec
                         });
-                        console.log(`[${account.username}] 👁️ Watched Reel #${reels} (${watchSec}s)`);
+                        console.log(`[${account.username}] 👁️ Просмотр Reels: [${reels}/${account.daily_limits.max_reels}] (лайков: ${likes}/${account.daily_limits.max_likes})`);
                     }
 
                     // ЧЕЛОВЕЧЕСКАЯ МИКРО-ИНТЕРАКЦИЯ 1: Чтение комментариев (каждые 6-9 рилсов с вероятностью 15%)
@@ -180,12 +211,15 @@ class AndroidWarmupWorker {
         // 7. Финал сессии
         await this.hub.endSession({
             session_id: sessionId,
+            account_id: account.account_id,
+            username: account.username,
             likes_count: likes,
             reels_watched: reels,
             comments_count: comments,
             status: 'success'
         });
-        console.log(`[${this.instanceId}] Session finished cleanly for @${account.username}`);
+        console.log(`[${account.username}] ✅ Прогрев завершён: ${reels}/${account.daily_limits.max_reels} Reels, ${likes}/${account.daily_limits.max_likes} лайков`);
+        return true;
     }
     /**
      * Быстрое переключение между аккаунтами внутри одного Instagram
