@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -38,6 +38,7 @@ const path = __importStar(require("path"));
 const AdbBridge_1 = require("./AdbBridge");
 const Telemetry_1 = require("./Telemetry");
 const AndroidWorker_1 = require("./AndroidWorker");
+
 async function main() {
     const configPath = path.resolve(__dirname, '..', 'config.json');
     if (!fs.existsSync(configPath)) {
@@ -47,31 +48,48 @@ async function main() {
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const hub = new Telemetry_1.HubClient(cfg.server_hub.api_url, cfg.server_hub.api_key);
     console.log(`[MasterRunner] Initializing ${cfg.instances.length} LDPlayer instances...`);
-    // Р—Р°РїСѓСЃРє РІРѕСЂРєРµСЂРѕРІ РїРѕ РєР°Р¶РґРѕРјСѓ РёРЅСЃС‚Р°РЅСЃСѓ
+
+    const runnerPromises = [];
+
     for (const inst of cfg.instances) {
         const adb = new AdbBridge_1.AdbBridge(inst.adb_device, cfg.ldplayer_path);
         const worker = new AndroidWorker_1.AndroidWarmupWorker(inst.instance_id, adb, hub, cfg.content_generation.fallback_spintax);
-        // Р’ РєР°Р¶РґРѕРј СЌРјСѓР»СЏС‚РѕСЂРµ РїРѕ РѕС‡РµСЂРµРґРё Р·Р°РїСѓСЃРєР°РµРј РѕР±Р° Р°РєРєР°СѓРЅС‚Р°
-        (async () => {
-            while (true) {
-                for (const account of inst.accounts) {
-                    try {
-                        await worker.runAccountSession(account);
-                        // РџР°СѓР·Р° РјРµР¶РґСѓ Р°РєРєР°СѓРЅС‚Р°РјРё РІРЅСѓС‚СЂРё РѕРґРЅРѕРіРѕ СЌРјСѓР»СЏС‚РѕСЂР° (3-8 РјРёРЅСѓС‚)
-                        const pauseMin = Math.floor(Math.random() * 5 + 3);
-                        console.log(`[${inst.instance_id}] Waiting ${pauseMin} min before switching account...`);
+
+        const p = (async () => {
+            for (let aIdx = 0; aIdx < inst.accounts.length; aIdx++) {
+                const account = inst.accounts[aIdx];
+                console.log(`[${inst.instance_id}] >>> ACTIVE_ACCOUNT: @${account.username}`);
+                for (let q = aIdx + 1; q < inst.accounts.length; q++) {
+                    console.log(`[${inst.instance_id}] >>> QUEUED_ACCOUNT: @${inst.accounts[q].username}`);
+                }
+
+                try {
+                    const success = await worker.runAccountSession(account);
+                    if (!success) {
+                        console.log(`[${inst.instance_id}] Сессия @${account.username} пропущена (VPN не был готов). Повтор через 20 сек...`);
+                        await new Promise(r => setTimeout(r, 20000));
+                        aIdx--; // Повторяем этот же аккаунт
+                        continue;
+                    }
+                    console.log(`[${inst.instance_id}] >>> FINISHED_ACCOUNT: @${account.username}`);
+
+                    if (aIdx < inst.accounts.length - 1) {
+                        const pauseMin = Math.floor(Math.random() * 3 + 2); // 2-4 мин пауза
+                        console.log(`[${inst.instance_id}] Пауза ${pauseMin} мин перед переключением на следующий аккаунт (@${inst.accounts[aIdx + 1].username})...`);
                         await new Promise(r => setTimeout(r, pauseMin * 60 * 1000));
                     }
-                    catch (err) {
-                        console.error(`[${inst.instance_id}] Error in session:`, err);
-                        await new Promise(r => setTimeout(r, 30000));
-                    }
+                } catch (err) {
+                    console.error(`[${inst.instance_id}] Ошибка сессии @${account.username}:`, err.message);
+                    await new Promise(r => setTimeout(r, 15000));
                 }
-                // РџР°СѓР·Р° РїРµСЂРµРґ СЃР»РµРґСѓСЋС‰РёРј РѕР±С‰РёРј С†РёРєР»РѕРј (3-4 С‡Р°СЃР°)
-                console.log(`[${inst.instance_id}] Full cycle finished. Resting for 3 hours...`);
-                await new Promise(r => setTimeout(r, 3 * 60 * 60 * 1000));
             }
+            console.log(`[${inst.instance_id}] Все аккаунты на эмуляторе ${inst.adb_device} полностью завершили прогрев!`);
         })();
+        runnerPromises.push(p);
     }
+
+    await Promise.all(runnerPromises);
+    console.log(`[MasterRunner] Все эмуляторы завершили свои сессии прогрева.`);
 }
+
 main().catch(console.error);

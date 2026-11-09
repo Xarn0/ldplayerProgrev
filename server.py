@@ -68,6 +68,8 @@ def save_config(cfg):
 
 active_threads = {}
 active_procs = {}
+active_running_workers = set()
+queued_workers = set()
 
 def run_cmd(cmd_list):
     try:
@@ -310,8 +312,25 @@ def run_worker_thread(account_ids):
     if not target_accs:
         target_accs = [{"account_id": aid, "username": aid, "device_id": "emulator-5554"} for aid in account_ids]
 
-    for aid in account_ids:
-        update_account_progress(aid, status="starting")
+    # Группировка по устройствам: первый аккаунт запускается сразу, остальные ставятся в очередь
+    dev_groups = {}
+    for acc in target_accs:
+        dev = acc.get("device_id") or "emulator-5554"
+        aid = acc.get("account_id") or acc.get("username")
+        if dev not in dev_groups:
+            dev_groups[dev] = []
+        dev_groups[dev].append(aid)
+
+    for dev, acc_list in dev_groups.items():
+        if acc_list:
+            first_user = acc_list[0]
+            active_running_workers.add(first_user)
+            queued_workers.discard(first_user)
+            update_account_progress(first_user, status="running")
+            for q_user in acc_list[1:]:
+                queued_workers.add(q_user)
+                active_running_workers.discard(q_user)
+                update_account_progress(q_user, status="queued")
 
     # Автозапуск нужных эмуляторов, если они были закрыты
     needed_devices = {acc.get("device_id") for acc in target_accs if acc.get("device_id")}
@@ -334,11 +353,33 @@ def run_worker_thread(account_ids):
         )
         for aid in account_ids:
             active_procs[aid] = proc
-            update_account_progress(aid, status="running")
+
         for line in proc.stdout:
             cleaned = line.strip()
             if cleaned:
                 add_log(cleaned)
+
+                # Сигналы смены аккаунта в очереди на устройстве
+                m_active = re.search(r'>>> ACTIVE_ACCOUNT:\s+@([^\s]+)', cleaned)
+                if m_active:
+                    cur_u = m_active.group(1)
+                    active_running_workers.add(cur_u)
+                    queued_workers.discard(cur_u)
+                    update_account_progress(cur_u, status="running")
+
+                m_queued = re.search(r'>>> QUEUED_ACCOUNT:\s+@([^\s]+)', cleaned)
+                if m_queued:
+                    q_u = m_queued.group(1)
+                    queued_workers.add(q_u)
+                    active_running_workers.discard(q_u)
+                    update_account_progress(q_u, status="queued")
+
+                m_fin = re.search(r'>>> FINISHED_ACCOUNT:\s+@([^\s]+)', cleaned)
+                if m_fin:
+                    fin_u = m_fin.group(1)
+                    active_running_workers.discard(fin_u)
+                    update_account_progress(fin_u, status="done")
+
                 # Парсинг прогресса в реальном времени из лога воркера
                 m_reels = re.search(r'\[([^\]]+)\]\s+👁️\s+Просмотр(?:\s+\[[^\]]+\])?\s+(?:Reels:\s+\[|#)?(\d+)/(\d+)', cleaned)
                 if m_reels:
@@ -367,12 +408,13 @@ def run_worker_thread(account_ids):
         add_log(f"Ошибка воркера: {e}")
     finally:
         for aid in account_ids:
+            active_running_workers.discard(aid)
+            queued_workers.discard(aid)
             if active_procs.get(aid) is proc:
                 active_procs.pop(aid, None)
                 active_threads.pop(aid, None)
             elif aid not in active_procs:
                 active_threads.pop(aid, None)
-            update_account_progress(aid, status="stopped")
         add_log("Сессия прогрева завершена.")
 
 
@@ -405,8 +447,12 @@ def stop_accounts(account_ids):
                 stopped.add(aid)
                 active_procs.pop(aid, None)
                 active_threads.pop(aid, None)
+                active_running_workers.discard(aid)
+                queued_workers.discard(aid)
                 update_account_progress(aid, status="stopped")
     for aid in account_ids:
+        active_running_workers.discard(aid)
+        queued_workers.discard(aid)
         if aid in active_threads:
             active_threads.pop(aid, None)
             stopped.add(aid)
@@ -438,7 +484,8 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 "ok": True,
                 "config": cfg,
                 "instances": instances,
-                "active_workers": list(active_threads.keys()),
+                "active_workers": list(active_running_workers),
+                "queued_workers": list(queued_workers),
                 "progress": account_progress,
                 "logs": live_logs[-40:]
             }

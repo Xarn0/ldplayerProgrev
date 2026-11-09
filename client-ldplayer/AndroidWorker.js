@@ -101,14 +101,13 @@ class AndroidWarmupWorker {
         if (isBlocked)
             return false;
 
-        // 6. Человеческий динамический прогрев (Рандомные режимы: Лента / Рилсы / Поиск по тегам)
-        const durationMin = Math.floor(Math.random() * (account.session_minutes[1] - account.session_minutes[0] + 1) + account.session_minutes[0]);
-        const endTime = Date.now() + durationMin * 60 * 1000;
+        // 6. Человеческий динамический прогрев (до достижения установленного лимита max_reels)
         let likes = 0;
         let reels = 0;
         let comments = 0;
+        const targetReels = account.daily_limits.max_reels || 30;
         const tags = (account.niche_tags && account.niche_tags.length) ? account.niche_tags : ['dogs', 'pets', 'puppy'];
-        console.log(`[${this.instanceId}] Warming up @${account.username} under tags: [${tags.join(', ')}] for ${durationMin} minutes...`);
+        console.log(`[${this.instanceId}] Warming up @${account.username} to target limit: ${targetReels} Reels...`);
 
         const availableModes = ['REELS', 'FEED', 'SEARCH_TAGS'];
         let currentMode = availableModes[Math.floor(Math.random() * availableModes.length)];
@@ -117,7 +116,9 @@ class AndroidWarmupWorker {
         await this.switchMode(currentMode, tags, account.username);
 
         let consecutiveErrors = 0;
-        while (Date.now() < endTime && reels < account.daily_limits.max_reels) {
+        const maxSessionTimeout = Date.now() + 3 * 3600 * 1000; // 3 часа макс. предохранитель
+
+        while (reels < targetReels && Date.now() < maxSessionTimeout) {
             try {
                 // Проверка VPN туннеля
                 const vpnOk = await this.adb.checkVpnActive();

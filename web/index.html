@@ -32,6 +32,7 @@
     .btn-secondary { background: #374151; color: var(--text); }
     .btn-secondary:hover { background: #4b5563; }
     .btn-running { background: #166534; color: #4ade80; border: 1px solid #22c55e; }
+    .btn-queued { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid #f59e0b; }
     .btn-stop { background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
     .btn-stop:hover { background: #991b1b; }
     
@@ -139,6 +140,7 @@
   <script>
     let appConfig = {};
     let activeWorkers = [];
+    let queuedWorkers = [];
     let accountProgress = {};
     let isEditing = false;
 
@@ -156,6 +158,7 @@
         const data = await res.json();
         appConfig = data.config || {};
         activeWorkers = data.active_workers || [];
+        queuedWorkers = data.queued_workers || [];
         accountProgress = data.progress || {};
         renderInstances(data.instances || []);
         renderLogs(data.logs || []);
@@ -205,8 +208,11 @@
 
     function updateWorkersBadges() {
       (appConfig.accounts || []).forEach((acc, i) => {
-        const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
-        const prog = accountProgress[acc.username] || accountProgress[acc.account_id] || { reels: 0, likes: 0 };
+        const u = acc.username;
+        const aid = acc.account_id;
+        const isRunning = activeWorkers.includes(u) || activeWorkers.includes(aid);
+        const isQueued = queuedWorkers.includes(u) || queuedWorkers.includes(aid);
+        const prog = accountProgress[u] || accountProgress[aid] || { reels: 0, likes: 0 };
         const lim = acc.limits || { reels: 30, likes: 15, comments: 2 };
         const maxR = lim.reels || 30;
         const maxL = lim.likes || 15;
@@ -216,7 +222,15 @@
 
         const txtEl = document.getElementById('prog_txt_' + i);
         if (txtEl) {
-          txtEl.innerHTML = `<span>🎬 Reels: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+          if (isQueued && curR === 0) {
+            txtEl.innerHTML = `<span style="color: #fbbf24;">⏳ В очереди на устройстве</span><span>лимит: ${maxR}</span>`;
+          } else if (isRunning) {
+            txtEl.innerHTML = `<span>🎬 Прогрев: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+          } else if (curR >= maxR && maxR > 0) {
+            txtEl.innerHTML = `<span style="color: #4ade80;">✅ Выполнено: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+          } else {
+            txtEl.innerHTML = `<span>🎬 Reels: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+          }
         }
         const fillEl = document.getElementById('prog_fill_' + i);
         if (fillEl) {
@@ -230,18 +244,26 @@
 
         const btn = document.getElementById('btn_action_' + i);
         if (btn) {
-          btn.className = 'btn ' + (isRunning ? 'btn-running' : '');
           if (isRunning) {
+            btn.className = 'btn btn-running';
             btn.innerText = `● ${curR}/${maxR} Reels`;
+            btn.disabled = true;
+          } else if (isQueued) {
+            btn.className = 'btn btn-queued';
+            btn.innerText = '⏳ В очереди';
+            btn.disabled = true;
           } else if (curR >= maxR && maxR > 0) {
+            btn.className = 'btn btn-secondary';
             btn.innerText = `✅ Завершено (${curR}/${maxR})`;
+            btn.disabled = false;
           } else {
+            btn.className = 'btn';
             btn.innerText = '▶ Старт';
+            btn.disabled = false;
           }
-          btn.disabled = isRunning;
         }
         const stopBtn = document.getElementById('btn_stop_' + i);
-        if (stopBtn) stopBtn.style.display = isRunning ? 'inline-block' : 'none';
+        if (stopBtn) stopBtn.style.display = (isRunning || isQueued) ? 'inline-block' : 'none';
       });
       updateBulkButtons();
     }
@@ -392,15 +414,47 @@
         return;
       }
       tbody.innerHTML = accounts.map((acc, i) => {
-        const isRunning = activeWorkers.includes(acc.account_id) || activeWorkers.includes(acc.username);
+        const u = acc.username;
+        const aid = acc.account_id;
+        const isRunning = activeWorkers.includes(u) || activeWorkers.includes(aid);
+        const isQueued = queuedWorkers.includes(u) || queuedWorkers.includes(aid);
         const lim = acc.limits || { reels: 30, likes: 15, comments: 2 };
-        const prog = accountProgress[acc.username] || accountProgress[acc.account_id] || { reels: 0, likes: 0 };
+        const prog = accountProgress[u] || accountProgress[aid] || { reels: 0, likes: 0 };
         const maxR = lim.reels || 30;
         const maxL = lim.likes || 15;
         const curR = prog.reels || 0;
         const curL = prog.likes || 0;
         const pct = Math.min(100, Math.round((curR / Math.max(1, maxR)) * 100));
         const ip = prog.proxy_ip || '';
+
+        let statusText = `🎬 Reels: ${curR}/${maxR}`;
+        if (isQueued && curR === 0) {
+          statusText = `<span style="color: #fbbf24;">⏳ В очереди на устройстве</span><span>лимит: ${maxR}</span>`;
+        } else if (isRunning) {
+          statusText = `<span>🎬 Прогрев: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+        } else if (curR >= maxR && maxR > 0) {
+          statusText = `<span style="color: #4ade80;">✅ Выполнено: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+        } else {
+          statusText = `<span>🎬 Reels: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
+        }
+
+        let btnClass = 'btn';
+        let btnText = '▶ Старт';
+        let btnDisabled = false;
+
+        if (isRunning) {
+          btnClass = 'btn btn-running';
+          btnText = `● ${curR}/${maxR} Reels`;
+          btnDisabled = true;
+        } else if (isQueued) {
+          btnClass = 'btn btn-queued';
+          btnText = '⏳ В очереди';
+          btnDisabled = true;
+        } else if (curR >= maxR && maxR > 0) {
+          btnClass = 'btn btn-secondary';
+          btnText = `✅ Завершено (${curR}/${maxR})`;
+          btnDisabled = false;
+        }
 
         return `
         <tr>
@@ -413,8 +467,7 @@
 
             <div class="progress-wrap">
               <div class="progress-text" id="prog_txt_${i}">
-                <span>🎬 Reels: ${curR}/${maxR}</span>
-                <span>❤️ ${curL}/${maxL}</span>
+                ${statusText}
               </div>
               <div class="progress-bar">
                 <div class="progress-fill" id="prog_fill_${i}" style="width: ${pct}%;"></div>
@@ -440,10 +493,10 @@
           </td>
           <td>
             <div style="display: flex; flex-direction: column; gap: 4px;">
-              <button id="btn_action_${i}" class="btn ${isRunning ? 'btn-running' : ''}" style="padding: 5px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)" ${isRunning ? 'disabled' : ''}>
-                ${isRunning ? `● ${curR}/${maxR} Reels` : (curR >= maxR && maxR > 0 ? `✅ Завершено` : '▶ Старт')}
+              <button id="btn_action_${i}" class="${btnClass}" style="padding: 5px 10px; font-size: 11px;" onclick="runSingle('${acc.account_id}', this)" ${btnDisabled ? 'disabled' : ''}>
+                ${btnText}
               </button>
-              <button id="btn_stop_${i}" class="btn btn-stop" style="padding: 4px 10px; font-size: 11px; display: ${isRunning ? 'inline-block' : 'none'};" onclick="stopSingle('${acc.account_id}', this)">
+              <button id="btn_stop_${i}" class="btn btn-stop" style="padding: 4px 10px; font-size: 11px; display: ${(isRunning || isQueued) ? 'inline-block' : 'none'};" onclick="stopSingle('${acc.account_id}', this)">
                 ■ Стоп
               </button>
             </div>
