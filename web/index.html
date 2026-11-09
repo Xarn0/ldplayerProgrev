@@ -239,7 +239,7 @@
         const vpnEl = document.getElementById('prog_vpn_' + i);
         if (vpnEl && prog.proxy_ip) {
           vpnEl.className = 'proxy-badge proxy-ok';
-          vpnEl.innerHTML = '🛡️ VPN: ' + prog.proxy_ip;
+          vpnEl.innerHTML = '🛡️ NekoBox: ' + prog.proxy_ip;
         }
 
         const btn = document.getElementById('btn_action_' + i);
@@ -425,7 +425,7 @@
         const curR = prog.reels || 0;
         const curL = prog.likes || 0;
         const pct = Math.min(100, Math.round((curR / Math.max(1, maxR)) * 100));
-        const ip = prog.proxy_ip || '';
+        const ip = prog.proxy_ip || acc.proxy_ip || '';
 
         let statusText = `🎬 Reels: ${curR}/${maxR}`;
         if (isQueued) {
@@ -475,7 +475,7 @@
             </div>
 
             <div id="prog_vpn_${i}" class="proxy-badge ${ip ? 'proxy-ok' : 'proxy-warn'}">
-              🛡️ ${ip ? 'VPN: ' + ip : 'VPN (NekoBox): Авто-проверка'}
+              🛡️ ${ip ? 'NekoBox: ' + ip : 'NekoBox: Авто-проверка'}
             </div>
           </td>
           <td>

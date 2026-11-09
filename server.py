@@ -241,6 +241,31 @@ def sync_client_runner_config(target_accounts):
 
 account_progress = {}
 
+def get_nekobox_proxy_ip(device_id):
+    if not device_id:
+        return ""
+    try:
+        cmd = [str(ADB_EXE), "-s", device_id, "shell",
+               'su -c "sqlite3 /data/data/moe.nb4a/databases/sager_net.db \'SELECT hex(socksBean) FROM proxy_entities WHERE socksBean IS NOT NULL LIMIT 1;\'"']
+        out = run_cmd(cmd).strip()
+        if out:
+            raw = bytes.fromhex(out)
+            chars = []
+            for b in raw[4:25]:
+                actual_b = b & 0x7f if (b & 0x80) else b
+                if (48 <= actual_b <= 57) or actual_b == 46:
+                    chars.append(chr(actual_b))
+                    if b & 0x80:
+                        break
+                else:
+                    break
+            ip = "".join(chars)
+            if ip.count(".") == 3:
+                return ip
+    except Exception:
+        pass
+    return ""
+
 def update_account_progress(username, reels=None, max_reels=None, likes=None, max_likes=None, proxy_ip=None, status=None):
     if not username:
         return
@@ -310,13 +335,12 @@ def ensure_emulator_running(device_id):
         add_log(f"[AutoLaunch] Эмулятор {device_id} (LDPlayer #{idx}) загружен!")
 
     # Проверка NekoBox VPN (туннель tun0)
-    add_log(f"[NekoBox] Проверка туннеля VPN (tun0) на {device_id}...")
-    for _ in range(12):
+    proxy_ip = get_nekobox_proxy_ip(device_id) or "NekoBox"
+    add_log(f"[NekoBox] Проверка туннеля VPN (tun0) на {device_id} (прокси: {proxy_ip})...")
+    for _ in range(8):
         routes = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "ip", "route"])
         if "tun0" in routes:
-            ip_info = run_cmd([str(ADB_EXE), "-s", device_id, "shell", "curl -s --max-time 4 https://api.ipify.org"])
-            ip_str = ip_info.strip() if (ip_info and "<" not in ip_info and len(ip_info.strip()) < 40) else "tun0 активен"
-            add_log(f"[NekoBox] 🛡️ VPN туннель подтверждён на {device_id}! Внешний IP: {ip_str}")
+            add_log(f"[NekoBox] 🛡️ VPN туннель подтверждён на {device_id}! Внешний IP: {proxy_ip}")
             return True
         time.sleep(2)
 
@@ -506,6 +530,12 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             cfg = load_config()
             instances = list_ld_instances()
+            for acc in cfg.get("accounts", []):
+                dev = acc.get("device_id")
+                if dev:
+                    p_ip = get_nekobox_proxy_ip(dev)
+                    if p_ip:
+                        acc["proxy_ip"] = p_ip
             res = {
                 "ok": True,
                 "config": cfg,

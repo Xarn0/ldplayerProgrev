@@ -61,6 +61,44 @@ class AndroidWarmupWorker {
             const xml = await this.adb.getUiXml();
             if (!xml) return true;
 
+            // 0. Защита от просмотра собственных историй и хайлайтов (скрин 1 и 2: Activity, Browse, Create, Boost, Send, More)
+            const isOwnHighlightOrStory = 
+                ((xml.includes('Activity') || xml.includes('Активность')) && (xml.includes('Boost') || xml.includes('Продвигать') || xml.includes('Browse') || xml.includes('Send') || xml.includes('More'))) ||
+                (xml.includes('Create') && xml.includes('Boost') && (xml.includes('Send') || xml.includes('Activity'))) ||
+                xml.includes('self_story_view') ||
+                xml.includes('reel_viewer_bottom_toolbar') ||
+                xml.includes('Say something...') ||
+                (xml.includes('DOG NOTES') && xml.includes('SAVE THIS'));
+
+            if (isOwnHighlightOrStory) {
+                console.warn(`[${this.instanceId}] 🛡️ Обнаружен просмотр собственных историй/хайлайтов (Activity/Boost со скрина 2). Немедленный выход и переход к поиску по тегам!`);
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 400));
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 800));
+                return 'RETURN_TO_SEARCH';
+            }
+
+            // 0.1. Критическая защита от выхода из аккаунта (скрин 4: Login / Log out)
+            const isLogOutScreen = 
+                xml.includes('Log out') || 
+                xml.includes('Log Out') || 
+                xml.includes('Выйти из аккаунта') || 
+                (xml.includes('Login') && (xml.includes('Log out') || xml.includes('Log Out')));
+
+            if (isLogOutScreen) {
+                console.warn(`[${this.instanceId}] 🚨 КРИТИЧЕСКИЙ ЭКРАН: Меню настроек выхода (Log out). Срочный уход назад без нажатий!`);
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 400));
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 400));
+                await this.adb.pressKey(4);
+                await new Promise(r => setTimeout(r, 800));
+                await this.clickTab('feed_tab');
+                await new Promise(r => setTimeout(r, 1500));
+                return false;
+            }
+
             // 1. Проверка чужих / закрытых профилей (как kshetrapal singh и др.)
             const isOtherProfile = 
                 xml.includes('Это закрытый аккаунт') ||
@@ -153,6 +191,61 @@ class AndroidWarmupWorker {
             return true;
         } catch {}
         return true;
+    }
+
+    /**
+     * Проверяет, реально ли загружен контент видео/поста (нет ли спиннера, ошибки сети или пустого зависания)
+     */
+    async isContentLoaded() {
+        try {
+            const xml = await this.adb.getUiXml();
+            if (!xml) return false;
+
+            // 1. Ошибки загрузки сети в Instagram
+            const netErrors = [
+                "Couldn't refresh feed",
+                "Не удалось обновить ленту",
+                "Tap to retry",
+                "Нажмите, чтобы повторить попытку",
+                "No internet connection",
+                "Нет подключения к интернету",
+                "Something went wrong",
+                "Что-то пошло не так",
+                "Unable to load",
+                "Can't connect to Instagram"
+            ];
+            for (const err of netErrors) {
+                if (xml.includes(err)) {
+                    console.warn(`[${this.instanceId}] ⚠️ Ошибка сети в Instagram: "${err}"`);
+                    return false;
+                }
+            }
+
+            // 2. Крутящийся спиннер (ProgressBar / SpinnerImageView) в центре экрана
+            const sz = await this.adb.getScreenSize();
+            const spinnerRegex = /<node[^>]*class="[^"]*(?:ProgressBar|Spinner)[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/gi;
+            let match;
+            while ((match = spinnerRegex.exec(xml)) !== null) {
+                const y1 = parseInt(match[2]), y2 = parseInt(match[4]);
+                const cy = (y1 + y2) / 2;
+                if (cy > sz.height * 0.20 && cy < sz.height * 0.85) {
+                    console.log(`[${this.instanceId}] ⏳ Замечен крутящийся спиннер загрузки видео (буферизация Y=${Math.round(cy)})...`);
+                    return false;
+                }
+            }
+
+            // 3. Проверка наличия интерактивных элементов контента поста/видео
+            const hasMediaContent = 
+                xml.includes('like') || xml.includes('Like') || 
+                xml.includes('comment') || xml.includes('Comment') || 
+                xml.includes('share') || xml.includes('Share') ||
+                xml.includes('reels') || xml.includes('Reels') ||
+                xml.includes('row_feed_button');
+
+            return hasMediaContent;
+        } catch {
+            return false;
+        }
     }
 
     async switchMode(mode, tags, username) {
@@ -270,6 +363,7 @@ class AndroidWarmupWorker {
         await this.switchMode(currentMode, tags, account.username);
 
         let consecutiveErrors = 0;
+        let consecutiveStalls = 0;
         const maxSessionTimeout = Date.now() + 3 * 3600 * 1000; // 3 часа макс. предохранитель
 
         while (reels < targetReels && Date.now() < maxSessionTimeout) {
@@ -282,22 +376,48 @@ class AndroidWarmupWorker {
                 }
 
                 // ЖЕСТКИЙ КОНТРОЛЬ МАРШРУТА И USA ГЕО:
-                const isSafe = await this.ensureSafeContentScreen(currentMode);
-                if (!isSafe) {
+                const safeStatus = await this.ensureSafeContentScreen(currentMode);
+                if (safeStatus === 'RETURN_TO_SEARCH') {
+                    console.log(`[${account.username}] 🔍 Переключение на поиск по нишевым тегам после закрытия своих хайлайтов...`);
+                    await this.switchMode('SEARCH_TAGS', tags, account.username);
+                    currentMode = 'SEARCH_TAGS';
+                    modeActionsLeft = Math.floor(Math.random() * 8 + 6);
+                    continue;
+                }
+                if (!safeStatus) {
                     console.log(`[${account.username}] ⏭️ Пропуск действия после выхода из чужого/не-USA профиля. Возврат в поток...`);
                     await new Promise(r => setTimeout(r, 2000));
                     continue;
                 }
 
-                // Проверка на чекпоинты каждые 5 действий
-                if (reels > 0 && reels % 5 === 0) {
-                    const blocked = await this.checkCheckpoints(sessionId, account);
-                    if (blocked) {
-                        console.error(`[${account.username}] Terminating session due to checkpoint.`);
-                        break;
-                    }
+                // ПРОВЕРКА ЗАГРУЗКИ КОНТЕНТА (Защита от накрутки при зависшем интернете / спиннере):
+                let isLoaded = await this.isContentLoaded();
+                if (!isLoaded) {
+                    // Даем 4 секунды на дозагрузку
+                    console.log(`[${account.username}] ⏳ Видео буферизуется. Ожидание дозагрузки (4s)...`);
+                    await new Promise(r => setTimeout(r, 4000));
+                    isLoaded = await this.isContentLoaded();
                 }
 
+                if (!isLoaded) {
+                    console.warn(`[${account.username}] ⚠️ Видео не загрузилось (интернет завис / слабый прокси). Пропуск БЕЗ зачёта в статистику и БЕЗ лайка!`);
+                    consecutiveStalls++;
+                    
+                    if (currentMode === 'FEED') {
+                        await this.adb.feedScroll();
+                    } else {
+                        await this.adb.reelsFlick(false);
+                    }
+
+                    if (consecutiveStalls >= 3) {
+                        console.warn(`[${account.username}] ⚠️ 3 видео подряд не загрузились! Пауза 10с для стабилизации связи...`);
+                        await new Promise(r => setTimeout(r, 10000));
+                        consecutiveStalls = 0;
+                    }
+                    continue; // НЕ увеличиваем reels, НЕ ставим лайк!
+                }
+
+                consecutiveStalls = 0;
                 reels++;
                 modeActionsLeft--;
 
@@ -587,15 +707,10 @@ class AndroidWarmupWorker {
                     await this.adb.humanTap(cx, cy);
                     clickedTarget = true;
                 } else {
-                    // Если точное имя не нашлось в тексте, но шторка открыта (есть "Добавьте аккаунт" или "Центр аккаунтов"):
-                    const isSwitcherOpen = sheetXml.includes('Добавьте аккаунт') || sheetXml.includes('Add account') || sheetXml.includes('Центр аккаунтов') || sheetXml.includes('Accounts Center');
-                    if (isSwitcherOpen) {
-                        const fallbackY = isTablet ? Math.floor(size.height * 0.66) : Math.floor(size.height * 0.68);
-                        const fallbackX = isTablet ? 800 : Math.floor(size.width / 2);
-                        console.log(`[${this.instanceId}] 🎯 Шторка активна. Тапаем второй слот (${fallbackX}, ${fallbackY})...`);
-                        await this.adb.humanTap(fallbackX, fallbackY);
-                        clickedTarget = true;
-                    }
+                    // Точное имя в шторке не найдено — НЕЛЬЗЯ тапать вслепую, чтобы не попасть в "Центр аккаунтов" или "Выйти" (скрин 4)
+                    console.warn(`[${this.instanceId}] ⚠️ @${targetUsername} не найден в открытой шторке. Закрываем шторку назад без перехода в меню...`);
+                    await this.adb.pressKey(4);
+                    await new Promise(r => setTimeout(r, 800));
                 }
             }
 
