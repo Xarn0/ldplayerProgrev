@@ -63,24 +63,39 @@ async function main() {
                     console.log(`[${inst.instance_id}] >>> QUEUED_ACCOUNT: @${inst.accounts[q].username}`);
                 }
 
-                try {
-                    const success = await worker.runAccountSession(account);
-                    if (!success) {
-                        console.log(`[${inst.instance_id}] Сессия @${account.username} пропущена (VPN не был готов). Повтор через 20 сек...`);
-                        await new Promise(r => setTimeout(r, 20000));
-                        aIdx--; // Повторяем этот же аккаунт
-                        continue;
+                let retries = 0;
+                let sessionSuccess = false;
+                while (retries < 2 && !sessionSuccess) {
+                    try {
+                        const success = await worker.runAccountSession(account);
+                        if (success) {
+                            sessionSuccess = true;
+                            console.log(`[${inst.instance_id}] >>> FINISHED_ACCOUNT: @${account.username}`);
+                        } else {
+                            retries++;
+                            if (retries < 2) {
+                                console.log(`[${inst.instance_id}] Сессия @${account.username} не удалась. Повторная попытка (2/2) через 15 сек...`);
+                                await new Promise(r => setTimeout(r, 15000));
+                            } else {
+                                console.warn(`[${inst.instance_id}] ⚠️ Не удалось запустить сессию @${account.username} после 2 попыток. Завершаем для перехода к очереди.`);
+                                console.log(`[${inst.instance_id}] >>> FINISHED_ACCOUNT: @${account.username}`);
+                            }
+                        }
+                    } catch (err) {
+                        retries++;
+                        console.error(`[${inst.instance_id}] Ошибка сессии @${account.username}:`, err.message);
+                        if (retries < 2) {
+                            await new Promise(r => setTimeout(r, 10000));
+                        } else {
+                            console.log(`[${inst.instance_id}] >>> FINISHED_ACCOUNT: @${account.username}`);
+                        }
                     }
-                    console.log(`[${inst.instance_id}] >>> FINISHED_ACCOUNT: @${account.username}`);
+                }
 
-                    if (aIdx < inst.accounts.length - 1) {
-                        const pauseMin = Math.floor(Math.random() * 3 + 2); // 2-4 мин пауза
-                        console.log(`[${inst.instance_id}] Пауза ${pauseMin} мин перед переключением на следующий аккаунт (@${inst.accounts[aIdx + 1].username})...`);
-                        await new Promise(r => setTimeout(r, pauseMin * 60 * 1000));
-                    }
-                } catch (err) {
-                    console.error(`[${inst.instance_id}] Ошибка сессии @${account.username}:`, err.message);
-                    await new Promise(r => setTimeout(r, 15000));
+                if (aIdx < inst.accounts.length - 1) {
+                    const pauseMin = Math.floor(Math.random() * 2 + 2); // 2-3 мин пауза между аккаунтами на одном эмуляторе
+                    console.log(`[${inst.instance_id}] ⏳ Пауза ${pauseMin} мин перед запуском следующего аккаунта из очереди (@${inst.accounts[aIdx + 1].username})...`);
+                    await new Promise(r => setTimeout(r, pauseMin * 60 * 1000));
                 }
             }
             console.log(`[${inst.instance_id}] Все аккаунты на эмуляторе ${inst.adb_device} полностью завершили прогрев!`);

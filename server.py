@@ -580,12 +580,47 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "Не указан account_id"}).encode("utf-8"))
                 return
 
-            if account_id in active_threads:
+            cfg = load_config()
+            acc_obj = next((a for a in cfg.get("accounts", []) if a.get("account_id") == account_id or a.get("username") == account_id), None)
+            dev_id = acc_obj.get("device_id") if acc_obj else None
+
+            # Проверяем, запущен ли уже воркер на этом же эмуляторе
+            device_running_user = None
+            if dev_id:
+                for aid in list(active_running_workers):
+                    other_acc = next((a for a in cfg.get("accounts", []) if a.get("account_id") == aid or a.get("username") == aid), None)
+                    if other_acc and other_acc.get("device_id") == dev_id and aid != account_id:
+                        device_running_user = aid
+                        break
+
+            if device_running_user:
+                # На этом устройстве уже работает другой аккаунт -> ставим в очередь!
+                queued_workers.add(account_id)
+                active_running_workers.discard(account_id)
+                update_account_progress(account_id, reels=0, likes=0, status="queued")
+                add_log(f"[Очередь] @{account_id} добавлен в очередь на устройстве {dev_id} (сейчас работает @{device_running_user})")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "ok": True,
+                    "message": f"@{account_id} в очереди на устройстве (ожидает @{device_running_user})",
+                    "status": "queued",
+                    "active_workers": list(active_running_workers),
+                    "queued_workers": list(queued_workers)
+                }).encode("utf-8"))
+                return
+
+            if account_id in active_threads and active_threads[account_id].is_alive():
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True, "message": "Воркер уже работает"}).encode("utf-8"))
                 return
+
+            active_running_workers.add(account_id)
+            queued_workers.discard(account_id)
+            update_account_progress(account_id, reels=0, likes=0, status="running")
 
             t = threading.Thread(target=run_worker_thread, args=([account_id],), daemon=True)
             active_threads[account_id] = t
@@ -594,12 +629,41 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "message": f"Прогрев @{account_id} запущен", "active_workers": list(active_threads.keys())}).encode("utf-8"))
+            self.wfile.write(json.dumps({
+                "ok": True,
+                "message": f"Прогрев @{account_id} запущен",
+                "active_workers": list(active_running_workers),
+                "queued_workers": list(queued_workers)
+            }).encode("utf-8"))
             return
 
         if parsed.path == "/api/worker/start-bulk":
             account_ids = data.get("account_ids", [])
-            to_start = [a for a in account_ids if a not in active_threads]
+            cfg = load_config()
+
+            # Группируем по устройствам
+            dev_groups = {}
+            for aid in account_ids:
+                acc_obj = next((a for a in cfg.get("accounts", []) if a.get("account_id") == aid or a.get("username") == aid), None)
+                dev = (acc_obj.get("device_id") if acc_obj else None) or "emulator-5554"
+                if dev not in dev_groups:
+                    dev_groups[dev] = []
+                dev_groups[dev].append(aid)
+
+            # Мгновенно обновляем статусы очереди для отображения в UI
+            for dev, a_list in dev_groups.items():
+                if a_list:
+                    first_u = a_list[0]
+                    active_running_workers.add(first_u)
+                    queued_workers.discard(first_u)
+                    update_account_progress(first_u, reels=0, likes=0, status="running")
+                    for q_u in a_list[1:]:
+                        queued_workers.add(q_u)
+                        active_running_workers.discard(q_u)
+                        update_account_progress(q_u, reels=0, likes=0, status="queued")
+                        add_log(f"[Очередь] @{q_u} поставлен в очередь на {dev} (после @{first_u})")
+
+            to_start = [a for a in account_ids if a not in active_threads or not active_threads[a].is_alive()]
             if to_start:
                 t = threading.Thread(target=run_worker_thread, args=(to_start,), daemon=True)
                 for a in to_start:
@@ -609,7 +673,12 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "message": f"Запущен прогрев для {len(to_start)} аккаунтов", "active_workers": list(active_threads.keys())}).encode("utf-8"))
+            self.wfile.write(json.dumps({
+                "ok": True,
+                "message": f"Запущен прогрев для {len(to_start)} аккаунтов (распределено по очередям устройств)",
+                "active_workers": list(active_running_workers),
+                "queued_workers": list(queued_workers)
+            }).encode("utf-8"))
             return
 
         if parsed.path == "/api/worker/stop":

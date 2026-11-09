@@ -222,8 +222,8 @@
 
         const txtEl = document.getElementById('prog_txt_' + i);
         if (txtEl) {
-          if (isQueued && curR === 0) {
-            txtEl.innerHTML = `<span style="color: #fbbf24;">⏳ В очереди на устройстве</span><span>лимит: ${maxR}</span>`;
+          if (isQueued) {
+            txtEl.innerHTML = `<span style="color: #fbbf24; font-weight: 600;">⏳ В очереди на устройстве</span><span style="color: var(--muted);">${curR > 0 ? curR + '/' : ''}${maxR} Reels</span>`;
           } else if (isRunning) {
             txtEl.innerHTML = `<span>🎬 Прогрев: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
           } else if (curR >= maxR && maxR > 0) {
@@ -428,8 +428,8 @@
         const ip = prog.proxy_ip || '';
 
         let statusText = `🎬 Reels: ${curR}/${maxR}`;
-        if (isQueued && curR === 0) {
-          statusText = `<span style="color: #fbbf24;">⏳ В очереди на устройстве</span><span>лимит: ${maxR}</span>`;
+        if (isQueued) {
+          statusText = `<span style="color: #fbbf24; font-weight: 600;">⏳ В очереди на устройстве</span><span style="color: var(--muted);">${curR > 0 ? curR + '/' : ''}${maxR} Reels</span>`;
         } else if (isRunning) {
           statusText = `<span>🎬 Прогрев: ${curR}/${maxR}</span><span>❤️ ${curL}/${maxL}</span>`;
         } else if (curR >= maxR && maxR > 0) {
@@ -548,12 +548,7 @@
         });
         const data = await res.json();
         showToast(data.message || 'Прогрев запущен');
-        if (btnEl) {
-          btnEl.className = 'btn btn-running';
-          btnEl.innerText = '● Прогрев идёт';
-          btnEl.disabled = false;
-        }
-        loadStatus();
+        await loadStatus(true);
       } catch (e) {
         showToast('Ошибка запуска: ' + e.message, true);
         if (btnEl) {
@@ -572,7 +567,7 @@
       }
       const bulkBtn = document.getElementById('startBulkBtn');
       bulkBtn.innerText = '⏳ Запуск потоков...';
-      const ids = enabledAccs.map(a => a.account_id);
+      const ids = enabledAccs.map(a => a.account_id || a.username);
       try {
         const res = await fetch('/api/worker/start-bulk', {
           method: 'POST',
@@ -583,7 +578,7 @@
         showToast(data.message || 'Запущено');
         bulkBtn.innerText = '● Прогрев активен';
         bulkBtn.className = 'btn btn-running';
-        loadStatus();
+        await loadStatus(true);
       } catch (e) {
         showToast('Ошибка запуска: ' + e.message, true);
         bulkBtn.innerText = '🚀 Запустить прогрев выбранных';

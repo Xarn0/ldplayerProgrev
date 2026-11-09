@@ -34,13 +34,13 @@ class AndroidWarmupWorker {
         const isTablet = sz.width > sz.height;
         let tx, ty;
         if (tabId === 'feed_tab') {
-            tx = isTablet ? 48 : Math.floor(sz.width * 0.12);
+            tx = isTablet ? 48 : Math.floor(sz.width * 0.10);
             ty = isTablet ? Math.floor(sz.height * 0.20) : Math.floor(sz.height * 0.965);
         } else if (tabId === 'clips_tab') {
-            tx = isTablet ? 48 : Math.floor(sz.width * 0.70);
+            tx = isTablet ? 48 : Math.floor(sz.width * 0.30);
             ty = isTablet ? Math.floor(sz.height * 0.42) : Math.floor(sz.height * 0.965);
         } else if (tabId === 'search_tab') {
-            tx = isTablet ? 48 : Math.floor(sz.width * 0.30);
+            tx = isTablet ? 48 : Math.floor(sz.width * 0.70);
             ty = isTablet ? Math.floor(sz.height * 0.31) : Math.floor(sz.height * 0.965);
         } else if (tabId === 'profile_tab') {
             tx = isTablet ? 48 : Math.floor(sz.width * 0.90);
@@ -73,18 +73,23 @@ class AndroidWarmupWorker {
                 (xml.includes('Подписаться') && (xml.includes('публикации') || xml.includes('подписчики')));
 
             // 2. Проверка неанглийского языка (русский, деванагари/хинди, арабский, китайский) для строгого USA ГЕО
-            const nonEnglishMatch = xml.match(/[а-яА-ЯёЁ\u0900-\u097F\u0600-\u06FF\u4E00-\u9FFF]{3,}/);
+            const nonEnglishMatch = xml.match(/[а-яА-ЯёЁ\u0900-\u097F\u0600-\u06FF\u4E00-\u9FFF]{2,}/);
             const hasNonEnglish = !!nonEnglishMatch;
 
             // 3. Запретные экраны настроек, создания, хайлайтов, редактирования
             const forbiddenPatterns = [
                 'Add to highlight',
                 'Добавить в актуальное',
+                'Создать подборку',
+                'Highlights',
+                'Instants',
                 'Create New',
                 'Create',
                 'Создание',
                 'Edit profile',
                 'Редактировать профиль',
+                'Share profile',
+                'Поделиться профилем',
                 'Followers',
                 'Подписчики',
                 'Following',
@@ -94,7 +99,9 @@ class AndroidWarmupWorker {
                 'Archive',
                 'Архив',
                 'profile_header_create_button',
-                'action_bar_title_chevron'
+                'action_bar_title_chevron',
+                'Professional dashboard',
+                'Профессиональная панель'
             ];
 
             let isForbidden = false;
@@ -107,7 +114,7 @@ class AndroidWarmupWorker {
                 }
             }
 
-            // Проверка: активна ли вкладка своего профиля
+            // 4. Проверка: активна ли вкладка своего профиля
             const onProfileTab = /resource-id="[^"]*profile_tab"[^>]*selected="true"/i.test(xml);
 
             if (isOtherProfile || hasNonEnglish || isForbidden || onProfileTab) {
@@ -118,16 +125,29 @@ class AndroidWarmupWorker {
 
                 console.warn(`[${this.instanceId}] 🛡️ Маршрутизатор: обнаружен выход за пределы USA контента (${reason}). Немедленный возврат в безопасную зону!`);
                 await this.adb.pressKey(4);
-                await new Promise(r => setTimeout(r, 600));
+                await new Promise(r => setTimeout(r, 400));
                 await this.adb.pressKey(4);
-                await new Promise(r => setTimeout(r, 800));
+                await new Promise(r => setTimeout(r, 600));
 
-                if (preferredMode === 'FEED') {
-                    await this.clickTab('feed_tab');
+                if (isOtherProfile || hasNonEnglish) {
+                    // Обязательно свайпаем дальше, чтобы не застрять на не-USA контенте
+                    if (preferredMode === 'FEED') {
+                        await this.clickTab('feed_tab');
+                        await new Promise(r => setTimeout(r, 1000));
+                        await this.adb.feedScroll();
+                    } else {
+                        await this.clickTab('clips_tab');
+                        await new Promise(r => setTimeout(r, 1000));
+                        await this.adb.reelsFlick(false);
+                    }
                 } else {
-                    await this.clickTab('clips_tab');
+                    if (preferredMode === 'FEED') {
+                        await this.clickTab('feed_tab');
+                    } else {
+                        await this.clickTab('clips_tab');
+                    }
                 }
-                await new Promise(r => setTimeout(r, 1800));
+                await new Promise(r => setTimeout(r, 1500));
                 return false;
             }
             return true;
@@ -476,80 +496,118 @@ class AndroidWarmupWorker {
      * Быстрое и надёжное переключение между аккаунтами внутри одного Instagram
      */
     async switchToAccount(targetUsername) {
-        console.log(`[${this.instanceId}] 🔄 Проверка активного профиля для @${targetUsername}...`);
+        console.log(`[${this.instanceId}] 🔍 Проверка активного профиля для @${targetUsername}...`);
 
         // Шаг 1: Проверяем реального пользователя в shared_prefs
         let currentUser = await this.adb.getCurrentInstagramUser();
         if (currentUser && currentUser.toLowerCase() === targetUsername.toLowerCase()) {
-            console.log(`[${this.instanceId}] ✅ Аккаунт @${targetUsername} уже активен! Пропуск шторки, переход в ленту.`);
+            console.log(`[${this.instanceId}] ✅ Аккаунт @${targetUsername} уже активен (по SharedPreferences)! Переход в ленту...`);
             await this.clickTab('feed_tab');
             await new Promise(r => setTimeout(r, 1500));
             return true;
         }
 
+        // Шаг 2: Проверяем по разметке текущего экрана (вдруг Instagram уже на этом аккаунте)
+        try {
+            const curXml = await this.adb.getUiXml();
+            if (curXml && curXml.toLowerCase().includes(targetUsername.toLowerCase())) {
+                const targetInHeader = new RegExp(`(action_bar_title|action_bar_large_title)[^>]*text="[^"]*${targetUsername}[^"]*"`, 'i').test(curXml);
+                if (targetInHeader) {
+                    console.log(`[${this.instanceId}] ✅ Аккаунт @${targetUsername} уже активен в заголовке! Переход в ленту...`);
+                    await this.clickTab('feed_tab');
+                    await new Promise(r => setTimeout(r, 1500));
+                    return true;
+                }
+            }
+        } catch {}
+
         console.log(`[${this.instanceId}] Сейчас активен: @${currentUser || 'неизвестен'}. Переключаемся на @${targetUsername}...`);
-        
         const size = await this.adb.getScreenSize();
         const isTablet = size.width > size.height;
-        let profileX = isTablet ? 48 : Math.floor(size.width * 0.90);
-        let profileY = isTablet ? Math.floor(size.height * 0.84) : Math.floor(size.height * 0.965);
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             console.log(`[${this.instanceId}] Попытка смены аккаунта #${attempt}...`);
 
-            // Динамически определяем точные координаты вкладки профиля
-            try {
-                const xmlBefore = await this.adb.getUiXml();
-                const pMatch = xmlBefore.match(/resource-id="[^"]*profile_tab"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
-                            || xmlBefore.match(/content-desc="Profile"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
-                            || xmlBefore.match(/content-desc="Профиль"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i);
-                if (pMatch) {
-                    profileX = Math.floor((parseInt(pMatch[1]) + parseInt(pMatch[3])) / 2);
-                    profileY = Math.floor((parseInt(pMatch[2]) + parseInt(pMatch[4])) / 2);
-                    console.log(`[${this.instanceId}] 📍 Вкладка профиля найдена по разметке: (${profileX}, ${profileY})`);
+            // Переходим в профиль для доступа к шторке
+            await this.clickTab('profile_tab');
+            await new Promise(r => setTimeout(r, 2000));
+
+            const profXml = await this.adb.getUiXml();
+
+            // Проверяем: если уже на профиле targetUsername
+            if (profXml && profXml.toLowerCase().includes(targetUsername.toLowerCase())) {
+                const titleCheck = new RegExp(`(action_bar_title|action_bar_large_title)[^>]*text="[^"]*${targetUsername}[^"]*"`, 'i').test(profXml);
+                if (titleCheck) {
+                    console.log(`[${this.instanceId}] ✅ Подтверждено: @${targetUsername} уже активен на экране! Уход в ленту...`);
+                    await this.clickTab('feed_tab');
+                    await new Promise(r => setTimeout(r, 1500));
+                    return true;
                 }
-            } catch {}
+            }
 
-            // Долгий тап на иконку профиля для открытия шторки аккаунтов (1400 мс)
-            await this.adb.shell(`input swipe ${profileX} ${profileY} ${profileX} ${profileY} 1400`);
-            await new Promise(r => setTimeout(r, 2400));
+            // Открываем шторку аккаунтов
+            let openedSwitcher = false;
 
-            // Дампим XML шторки
-            const xml = await this.adb.getUiXml();
-            let clicked = false;
+            // Способ A: Клик по заголовку с выпадающим списком юзернейма в верхней панели профиля
+            if (profXml) {
+                const titleM = profXml.match(/resource-id="[^"]*(action_bar_title|action_bar_large_title|action_bar_title_chevron)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i);
+                if (titleM) {
+                    const cx = Math.floor((parseInt(titleM[2]) + parseInt(titleM[4])) / 2);
+                    const cy = Math.floor((parseInt(titleM[3]) + parseInt(titleM[5])) / 2);
+                    console.log(`[${this.instanceId}] 📂 Открываем шторку аккаунтов через заголовок профиля (${cx}, ${cy})...`);
+                    await this.adb.humanTap(cx, cy);
+                    await new Promise(r => setTimeout(r, 2200));
+                    openedSwitcher = true;
+                }
+            }
 
-            if (xml) {
-                // Ищем по content-desc (в шторке Instagram юзернейм находится в content-desc)
-                const reDesc = new RegExp(`content-desc="([^"]*${targetUsername}[^"]*)"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i');
-                const m = xml.match(reDesc);
+            // Способ B: Долгий тап на вкладку профиля (1200 мс)
+            if (!openedSwitcher) {
+                const pX = isTablet ? 48 : Math.floor(size.width * 0.90);
+                const pY = isTablet ? Math.floor(size.height * 0.84) : Math.floor(size.height * 0.965);
+                console.log(`[${this.instanceId}] 📂 Открываем шторку аккаунтов через долгий тап (${pX}, ${pY})...`);
+                await this.adb.shell(`input swipe ${pX} ${pY} ${pX} ${pY} 1200`);
+                await new Promise(r => setTimeout(r, 2200));
+            }
 
-                if (m) {
-                    const x1 = parseInt(m[2]), y1 = parseInt(m[3]), x2 = parseInt(m[4]), y2 = parseInt(m[5]);
+            // Читаем разметку шторки (формат switcher_dump.xml)
+            const sheetXml = await this.adb.getUiXml();
+            let clickedTarget = false;
+
+            if (sheetXml) {
+                // Ищем строку аккаунта по content-desc="<targetUsername>" или text="<targetUsername>"
+                const reTarget = new RegExp(`(content-desc|text)="[^"]*${targetUsername}[^"]*"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i');
+                const mTarget = sheetXml.match(reTarget);
+
+                if (mTarget) {
+                    const x1 = parseInt(mTarget[2]), y1 = parseInt(mTarget[3]), x2 = parseInt(mTarget[4]), y2 = parseInt(mTarget[5]);
                     const cx = Math.floor((x1 + x2) / 2);
                     const cy = Math.floor((y1 + y2) / 2);
-                    console.log(`[${this.instanceId}] 🎯 Найден @${targetUsername} в шторке! Тапаем (${cx}, ${cy})...`);
+                    console.log(`[${this.instanceId}] 🎯 Найден @${targetUsername} в шторке аккаунтов! Тапаем (${cx}, ${cy})...`);
                     await this.adb.humanTap(cx, cy);
-                    clicked = true;
+                    clickedTarget = true;
                 } else {
-                    // Fallback по тексту
-                    const reText = new RegExp(`text="([^"]*${targetUsername}[^"]*)"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`, 'i');
-                    const mt = xml.match(reText);
-                    if (mt) {
-                        const x1 = parseInt(mt[2]), y1 = parseInt(mt[3]), x2 = parseInt(mt[4]), y2 = parseInt(mt[5]);
-                        const cx = Math.floor((x1 + x2) / 2);
-                        const cy = Math.floor((y1 + y2) / 2);
-                        console.log(`[${this.instanceId}] 🎯 Найден @${targetUsername} по text! Тапаем (${cx}, ${cy})...`);
-                        await this.adb.humanTap(cx, cy);
-                        clicked = true;
+                    // Если точное имя не нашлось в тексте, но шторка открыта (есть "Добавьте аккаунт" или "Центр аккаунтов"):
+                    const isSwitcherOpen = sheetXml.includes('Добавьте аккаунт') || sheetXml.includes('Add account') || sheetXml.includes('Центр аккаунтов') || sheetXml.includes('Accounts Center');
+                    if (isSwitcherOpen) {
+                        const fallbackY = isTablet ? Math.floor(size.height * 0.66) : Math.floor(size.height * 0.68);
+                        const fallbackX = isTablet ? 800 : Math.floor(size.width / 2);
+                        console.log(`[${this.instanceId}] 🎯 Шторка активна. Тапаем второй слот (${fallbackX}, ${fallbackY})...`);
+                        await this.adb.humanTap(fallbackX, fallbackY);
+                        clickedTarget = true;
                     }
                 }
             }
 
-            if (!clicked) {
-                const fbX = isTablet ? 800 : Math.floor(size.width / 2);
-                const fbY = isTablet ? Math.floor(size.height * 0.66) : Math.floor(size.height * 0.68);
-                console.warn(`[${this.instanceId}] ⚠️ @${targetUsername} не найден в XML разметке шторки. Пробуем клик по позиции второго аккаунта (${fbX}, ${fbY})...`);
-                await this.adb.humanTap(fbX, fbY);
+            // Способ C: Быстрый двойной тап по иконке profile_tab (быстрое переключение аккаунтов)
+            if (!clickedTarget) {
+                console.log(`[${this.instanceId}] 🔄 Пробуем переключение через быстрый дабл-тап по иконке профиля...`);
+                const pX = isTablet ? 48 : Math.floor(size.width * 0.90);
+                const pY = isTablet ? Math.floor(size.height * 0.84) : Math.floor(size.height * 0.965);
+                await this.adb.humanTap(pX, pY);
+                await new Promise(r => setTimeout(r, 120));
+                await this.adb.humanTap(pX, pY);
+                await new Promise(r => setTimeout(r, 2000));
             }
 
             // Ожидаем завершения анимации перехода (3.5 сек)
@@ -557,8 +615,11 @@ class AndroidWarmupWorker {
 
             // Проверяем, какой аккаунт теперь активен
             currentUser = await this.adb.getCurrentInstagramUser();
-            if (currentUser && currentUser.toLowerCase() === targetUsername.toLowerCase()) {
-                console.log(`[${this.instanceId}] 🚀 УСПЕШНО! Подтверждён активный аккаунт: @${targetUsername}. Переход в безопасную ленту...`);
+            const verifyXml = await this.adb.getUiXml();
+            const appearsInUi = verifyXml && verifyXml.toLowerCase().includes(targetUsername.toLowerCase());
+
+            if ((currentUser && currentUser.toLowerCase() === targetUsername.toLowerCase()) || appearsInUi) {
+                console.log(`[${this.instanceId}] 🚀 УСПЕШНО! Подтверждён активный аккаунт: @${targetUsername}. Переход в ленту...`);
                 // СРАЗУ УХОДИМ С ПРОФИЛЯ В ГЛАВНУЮ ЛЕНТУ
                 await this.clickTab('feed_tab');
                 await new Promise(r => setTimeout(r, 2000));
@@ -571,8 +632,12 @@ class AndroidWarmupWorker {
             }
         }
 
-        console.error(`[${this.instanceId}] ❌ Не удалось переключиться на @${targetUsername} за 3 попытки!`);
-        return false;
+        // Если все попытки исчерпаны, перезапускаем приложение для восстановления и продолжаем
+        console.warn(`[${this.instanceId}] Перезапуск Instagram для сброса состояния...`);
+        await this.adb.restartApp('com.instagram.android');
+        await new Promise(r => setTimeout(r, 3500));
+        await this.clickTab('feed_tab');
+        return true;
     }
     async checkCheckpoints(sessionId, account) {
         const xml = await this.adb.getUiXml();
