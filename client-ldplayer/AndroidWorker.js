@@ -51,13 +51,32 @@ class AndroidWarmupWorker {
     }
 
     /**
-     * Сторож безопасного контента: не даёт боту залипать в профиле, хайлайтах или меню создания
+     * Сторож безопасного контента и USA ГЕО:
+     * 1. Не даёт боту залипать в профиле, хайлайтах или меню создания.
+     * 2. Немедленно выходит из чужих профилей (закрытых, пустых, кнопок Follow/Подписаться).
+     * 3. Защита USA ГЕО: немедленно выходит, если на экране обнаружен неанглийский язык (русский, хинди, арабский).
      */
     async ensureSafeContentScreen(preferredMode = 'REELS') {
         try {
             const xml = await this.adb.getUiXml();
-            if (!xml) return;
+            if (!xml) return true;
 
+            // 1. Проверка чужих / закрытых профилей (как kshetrapal singh и др.)
+            const isOtherProfile = 
+                xml.includes('Это закрытый аккаунт') ||
+                xml.includes('This Account is Private') ||
+                xml.includes('This account is private') ||
+                xml.includes('Рекомендации для вас') ||
+                xml.includes('Suggested for you') ||
+                xml.includes('action_bar_button_back') ||
+                (xml.includes('Follow') && (xml.includes('posts') || xml.includes('followers'))) ||
+                (xml.includes('Подписаться') && (xml.includes('публикации') || xml.includes('подписчики')));
+
+            // 2. Проверка неанглийского языка (русский, деванагари/хинди, арабский, китайский) для строгого USA ГЕО
+            const nonEnglishMatch = xml.match(/[а-яА-ЯёЁ\u0900-\u097F\u0600-\u06FF\u4E00-\u9FFF]{3,}/);
+            const hasNonEnglish = !!nonEnglishMatch;
+
+            // 3. Запретные экраны настроек, создания, хайлайтов, редактирования
             const forbiddenPatterns = [
                 'Add to highlight',
                 'Добавить в актуальное',
@@ -88,11 +107,16 @@ class AndroidWarmupWorker {
                 }
             }
 
-            // Проверка: если активна вкладка профиля (selected="true" на profile_tab)
+            // Проверка: активна ли вкладка своего профиля
             const onProfileTab = /resource-id="[^"]*profile_tab"[^>]*selected="true"/i.test(xml);
 
-            if (isForbidden || onProfileTab) {
-                console.warn(`[${this.instanceId}] 🛡️ Маршрутизатор: обнаружен уход с ленты (${triggerWord || 'страница профиля'}). Возврат в безопасную зону!`);
+            if (isOtherProfile || hasNonEnglish || isForbidden || onProfileTab) {
+                let reason = 'страница профиля';
+                if (isOtherProfile) reason = 'чужой/закрытый профиль';
+                else if (hasNonEnglish) reason = `неанглийский язык ("${nonEnglishMatch[0]}") — защита USA ГЕО`;
+                else if (isForbidden) reason = triggerWord;
+
+                console.warn(`[${this.instanceId}] 🛡️ Маршрутизатор: обнаружен выход за пределы USA контента (${reason}). Немедленный возврат в безопасную зону!`);
                 await this.adb.pressKey(4);
                 await new Promise(r => setTimeout(r, 600));
                 await this.adb.pressKey(4);
@@ -104,8 +128,11 @@ class AndroidWarmupWorker {
                     await this.clickTab('clips_tab');
                 }
                 await new Promise(r => setTimeout(r, 1800));
+                return false;
             }
+            return true;
         } catch {}
+        return true;
     }
 
     async switchMode(mode, tags, username) {
@@ -121,17 +148,20 @@ class AndroidWarmupWorker {
                 await this.clickTab('search_tab');
                 await new Promise(r => setTimeout(r, 2000));
 
-                const pickTag = tags[Math.floor(Math.random() * tags.length)];
-                console.log(`[${username}] 🔍 USA Geo Поиск: "${pickTag}"`);
+                const rawTag = tags[Math.floor(Math.random() * tags.length)];
+                const searchTag = rawTag.startsWith('#') ? rawTag : `#${rawTag.replace(/\s+/g, '')}`;
+                console.log(`[${username}] 🔍 USA Geo Поиск по хештегу: "${searchTag}"`);
                 const sz = await this.adb.getScreenSize();
                 await this.adb.humanTap(Math.floor(sz.width / 2), Math.floor(sz.height * 0.08));
                 await new Promise(r => setTimeout(r, 1500));
-                await this.adb.sendText(pickTag);
+                await this.adb.sendText(searchTag);
                 await new Promise(r => setTimeout(r, 1000));
                 await this.adb.pressKey(66); // Enter
                 await new Promise(r => setTimeout(r, 3000));
-                await this.adb.humanTap(Math.floor(sz.width * 0.28), Math.floor(sz.height * 0.28));
+                // Тапаем в медиа-сетку результатов (центр экрана), исключая клик по строке аккаунтов
+                await this.adb.humanTap(Math.floor(sz.width * 0.50), Math.floor(sz.height * 0.45));
                 await new Promise(r => setTimeout(r, 2500));
+                await this.ensureSafeContentScreen('REELS');
             }
         } catch (err) {
             console.warn(`[${username}] Не удалось гладко переключить режим: ${err.message}`);
@@ -185,7 +215,8 @@ class AndroidWarmupWorker {
             instance_id: this.instanceId,
             proxy_ip: proxyIp
         });
-        // 3. Открываем / перезапускаем Instagram
+        // 3. Принудительно устанавливаем USA локаль на эмуляторе и перезапускаем Instagram
+        await this.adb.enforceUsaLocale();
         await this.adb.restartApp('com.instagram.android');
         // 4. Переключение на нужный аккаунт
         const switchOk = await this.switchToAccount(account.username);
@@ -230,8 +261,13 @@ class AndroidWarmupWorker {
                     break;
                 }
 
-                // ЖЕСТКИЙ КОНТРОЛЬ МАРШРУТА: не даём боту залипать в профиле, хайлайтах или меню создания
-                await this.ensureSafeContentScreen(currentMode);
+                // ЖЕСТКИЙ КОНТРОЛЬ МАРШРУТА И USA ГЕО:
+                const isSafe = await this.ensureSafeContentScreen(currentMode);
+                if (!isSafe) {
+                    console.log(`[${account.username}] ⏭️ Пропуск действия после выхода из чужого/не-USA профиля. Возврат в поток...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                    continue;
+                }
 
                 // Проверка на чекпоинты каждые 5 действий
                 if (reels > 0 && reels % 5 === 0) {

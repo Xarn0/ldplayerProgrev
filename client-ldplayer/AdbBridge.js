@@ -167,6 +167,15 @@ class AdbBridge {
         } catch {}
         return null;
     }
+    async enforceUsaLocale() {
+        try {
+            await this.shell('settings put system system_locales en-US');
+            await this.shell('settings put global system_locales en-US');
+            await this.shell('su 0 setprop persist.sys.locale en-US');
+            await this.shell('su 0 setprop persist.sys.language en');
+            await this.shell('su 0 setprop persist.sys.country US');
+        } catch {}
+    }
     async checkVpnActive() {
         const res = await this.shell('ip route');
         return res.includes('tun0');
