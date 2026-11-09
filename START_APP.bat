@@ -1,22 +1,30 @@
 @echo off
-chcp 65001 > nul
-title LDPlayer Warmup Engine & GUI
+title LDPlayer Warmup Engine
 
 echo ========================================================
-echo    LDPLAYER WARMUP ENGINE & DASHBOARD
+echo    LDPLAYER WARMUP ENGINE ^& DASHBOARD
 echo ========================================================
 echo.
-echo [1/2] Проверка окружения Python...
-python --version
+
+python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python не найден! Установите Python 3.x с галочкой Add to PATH.
+    echo [ERROR] Python is not found in PATH!
     pause
-    exit /b
+    exit /b 1
 )
 
-echo [2/2] Запуск локального графического сервера на порту 8099...
-echo Сервер открывается в браузере: http://localhost:8099
-echo.
+netstat -ano | findstr :8099 | findstr LISTENING >nul 2>&1
+if not errorlevel 1 (
+    echo [OK] Server is already running on http://localhost:8099
+    echo Opening dashboard in your browser...
+    start "" http://localhost:8099
+    exit /b 0
+)
+
+echo Starting LDPlayer Warmup Server on http://localhost:8099...
 start "" http://localhost:8099
 python server.py
-pause
+if errorlevel 1 (
+    echo [ERROR] Failed to start server. Port 8099 might be in use.
+    pause
+)

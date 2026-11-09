@@ -480,9 +480,22 @@ class WarmupHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
 def main():
     os.chdir(str(BASE_DIR))
-    server = socketserver.TCPServer(("0.0.0.0", PORT), WarmupHandler)
+    try:
+        server = ReusableTCPServer(("0.0.0.0", PORT), WarmupHandler)
+    except OSError as e:
+        if getattr(e, "winerror", None) == 10048 or "10048" in str(e):
+            print("=======================================================")
+            print(f"[OK] Сервер прогрева уже запущен и работает на порту {PORT}!")
+            print(f"Панель управления доступна по адресу: http://localhost:{PORT}")
+            print("=======================================================")
+            return
+        raise e
+
     print("=======================================================")
     print("LDPLAYER WARMUP ENGINE RUNNING ON:")
     print("Local PC GUI:      http://localhost:" + str(PORT))
